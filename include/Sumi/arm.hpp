@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include <string>
 
+#define NOP -1
+#define REGSIZE 17
+
 #define SP 13
 #define LR 14
 #define PC 15
@@ -12,15 +15,18 @@
 #define C 0x20000000
 #define V 0x10000000
 
+#define CONDITION( x ) (uint8_t)((x & 0xf0000000) >> 28)
+#define MATCHNIBBLE( x, template, nibble ) !((x & (0xf << nibble * 4)) ^ (template << nibble * 4))
+
+enum OpType {ldb, ldw, ldd, strb, strw, strd};
+
+struct MemOp {
+    uint32_t addr;
+    OpType operation;
+    uint32_t data; //on store
+};
+
 class Arm {
-
-    enum OpType {ldb, ldw, ldword, strb, strw};
-
-    struct MemOp {
-        uint32_t addr;
-        OpType operation;
-        uint32_t data; //on store
-    };
 
     enum State {arm_mode, thumb_mode};
 
@@ -37,6 +43,8 @@ class Arm {
         B,
         UNIMP,
     };
+
+
 
     enum ConditionField {
         EQ, //equal
@@ -60,21 +68,24 @@ class Arm {
     uint32_t rf[17]; //register file
     //I don't need to store memory here I believe, I need only a memory access handler
     uint32_t (*MMU)(MemOp mem_op);
-    size_t memory_size;
 
     //todo:
     //interrupts
     //cycle timing
+    //coprocessor
 
     uint32_t fetch();
     uint8_t decode(uint32_t instruction);
-    uint8_t execute(uint32_t instruction, InstructionMnemonic type);
+    bool condition_pass(ConditionField condition);
+    void execute(uint32_t instruction, InstructionMnemonic type);
     
     public:
         void reset();
         void step();
-        char* dump();
-        void load_rom (uint8_t* dest, std::string file_path, size_t file_size);
+        void dump(char* buffer) const;
+        void set_MMU(void* func_ptr);
+        uint32_t get_pc() const;
+        void encode(char* buffer, uint32_t instruction);
 
 };
     

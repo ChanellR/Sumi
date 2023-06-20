@@ -5,15 +5,17 @@
 #include "../imgui/imgui_impl_opengl3.h"
 
 #include <iostream>
+#include <map>
+#include "../include/Sumi/window.hpp"
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
-void processInput(GLFWwindow *window);
+bool test_key_press(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses);
 
 // settings
 const unsigned int SCR_WIDTH = 1200;
 const unsigned int SCR_HEIGHT = 800;
 
-int run_app()
+int run_app(Arm* arm_handle, GBA* gba_handle)
 {
     const char* glsl_version = "#version 130";
 
@@ -35,6 +37,7 @@ int run_app()
         glfwTerminate();
         return -1;
     }
+
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
@@ -55,33 +58,59 @@ int run_app()
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    bool show_demo_window = true;
+
     // render loop
     // -----------
+
+    char reg_dump_buffer[16 * REGSIZE];
+    std::map<uint16_t, uint8_t> key_presses;
+    key_presses[GLFW_KEY_ENTER] = GLFW_RELEASE;
+
     while (!glfwWindowShouldClose(window))
     {
         ImGui_ImplGlfw_NewFrame();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui::NewFrame();
         
+        //Dear Imgui
         {
-            //figure out how to dock window
-            /*
-                
+            ImGui::Begin("Register Dump");
+            arm_handle->dump(reg_dump_buffer);
+            ImGui::Text(reg_dump_buffer);
+            ImGui::End();
+
+            ImGui::Begin("Instruction Memory");
+            ImGui::BeginChild("Scrolling");
             
-            */
-            ImGui::Begin("Emulator Data");
+            {
+                uint32_t pc = arm_handle->get_pc();
+                for (int n = -10; n < 10; n++){
+                    if((int32_t)(pc + (n*4)) < 0) continue;
+
+                    MemOp fetch_operation = {pc + (n*4), ldd};
+                    uint32_t instruction = gba_handle->memory_access(fetch_operation);
+
+                    if (n == 0) {
+                        ImGui::TextColored(ImVec4(0,1,0.5,0.4),"0x%08X: 0x%08X", pc + (4*n), instruction);
+                    } else {
+                        ImGui::Text("0x%08X: 0x%08X", pc + (4*n), instruction);
+                    }
+                }
+            }
+
+            ImGui::EndChild();
             ImGui::End();
         }
 
         // input
         // -----
         glfwPollEvents();
-        processInput(window);
+        if(test_key_press(window, GLFW_KEY_ENTER, key_presses)) arm_handle->step();
+        if(test_key_press(window, GLFW_KEY_BACKSPACE, key_presses)) arm_handle->reset();
 
         // render
         // ------
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
@@ -104,12 +133,15 @@ int run_app()
     return 0;
 }
 
-// process all input: query GLFW whether relevant keys are pressed/released this frame and react accordingly
-// ---------------------------------------------------------------------------------------------------------
-void processInput(GLFWwindow *window)
-{
-    if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
+//single press key stroke testing
+bool test_key_press(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses){
+    uint8_t current_state = glfwGetKey(window, key);
+    if(current_state == GLFW_RELEASE && last_presses[key] == GLFW_PRESS){
+        last_presses[key] = current_state;
+        return true;
+    }
+    last_presses[key] = current_state;
+    return false;
 }
 
 // glfw: whenever the window size changed (by OS or user resize) this callback function executes
