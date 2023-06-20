@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "*.ms": "bsv",
+        "*.s": "asm-intel-x86-generic",
+        "iostream": "cpp"
+    }
+}
