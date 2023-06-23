@@ -7,7 +7,7 @@ SRC_DIRS := ./src
 
 # Find all the C and C++ files we want to compile
 # Note the single quotes around the * expressions. The shell will incorrectly expand these otherwise, but we want to send the * directly to the find command.
-SRCS := $(wildcard $(SRC_DIRS)/*) $(wildcard ./imgui/*.cpp)
+SRCS := $(wildcard $(SRC_DIRS)/*) $(wildcard ./imgui/*.cpp) 
 
 # Prepends BUILD_DIR and appends .o to every src file
 # As an example, ./your_dir/hello.cpp turns into ./build/./your_dir/hello.cpp.o
@@ -41,5 +41,6 @@ run: $(BUILD_DIR)/$(TARGET_EXEC)
 #avoids imgui compiled files
 .PHONY: clean
 clean:
-	rm -r $(BUILD_DIR)/src
-	rm -r $(BUILD_DIR)/Sumi
+	rm -r $(BUILD_DIR)
+
+	

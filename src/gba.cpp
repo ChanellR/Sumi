@@ -9,7 +9,7 @@
 #include <cstring>
 
 GBA gba = GBA();
-void test(Arm* arm, uint32_t instruction);
+#define DEFAULT_FILE "roms/main.gba"
 
 int main() {
 
@@ -18,41 +18,35 @@ int main() {
 
     arm.set_MMU((void*)mmu);
     arm.reset();
+    sprintf(gba.filepath, DEFAULT_FILE);
     gba.reset();
-    // printf("palette real location: %X", gba.MEM.palette);
 
-    test(&arm, 0xE38110FF);
+    uint32_t test_inst = 0xE1700003;
 
-    // return 0;
+    // arm.set_reg(0, 0xf1bad789);
+    // arm.set_reg(3, 0xb4595c00);
+    // arm.set_reg(16, 0x8000001F);
+    // arm.info(test_inst); 
+    // arm.execute(test_inst, arm.decode(test_inst));
 
     // char reg_dump[20*17];
-
-    // arm.set_reg(14, 0xFF);
     // arm.register_dump(reg_dump);
-    // // printf("%s\n", reg_dump);
+    // printf("%s\n", reg_dump);
 
-    // arm.execute(inst.word, arm.decode(inst.word));
-    // arm.register_dump(reg_dump);
-    // // printf("%s\n", reg_dump);
+    // return 0;
 
     return run_app(&arm, &gba);
 }
 
-void test(Arm* arm, uint32_t instruction){
-    Arm::InstructionAttributes inst;
-    inst.word = instruction;
-    char Disassembly[20];
-    arm->disassemble(Disassembly, inst.word);
-    printf("%s\n", Disassembly);
-}
+
 
 uint32_t mmu(Arm::MemOp mem_op){
     return gba.memory_access(mem_op);
 }
 
-void GBA::load_rom (uint8_t* dest, std::string file_path, size_t file_size){
+void GBA::load_rom (uint8_t* dest, size_t file_size){
     //file_size in bytes
-    FILE* f = std::fopen(file_path.c_str(), "rb");
+    FILE* f = std::fopen(filepath, "rb");
     if (!f) {
         std::cout << "file not properly initialized" << std::endl;
         return;
@@ -72,12 +66,12 @@ void GBA::reset(){
     memset(MEM.VRAM, 0, 96 * 1024);
     memset(MEM.OAM, 0, 1024);
     memset(ROM, 0, ROMPAKSIZE);
-    gba.load_rom(gba.ROM, std::string("roms/main.gba"), ROMPAKSIZE);
+    gba.load_rom(gba.ROM, ROMPAKSIZE);
 }
 
 void GBA::stack_dump(char* buffer, uint32_t stack_pointer) {
     //showing 4 words below and 10 words above
-    for(int word=7; word > -8; word--){
+    for(int word=15; word > -16; word--){
         if(stack_pointer + word < 0) break;
         Arm::MemOp fetch_operation = {stack_pointer + (word*4), Arm::ldw};
         buffer += sprintf(buffer, "0x%08X %08Xh", stack_pointer + (word*4), memory_access(fetch_operation));
@@ -125,6 +119,7 @@ uint32_t GBA::memory_access(Arm::MemOp mem_op){
     }
     else if(addr >= 0x04000000 && addr <= 0x040003FE){
         //IO
+        // if(addr == KEYINPUT) return 0x0f;
         location = &MEM.IO[addr-0x04000000];
     }
     else if(addr >= 0x04000400 && addr <= 0x04FFFFFF){
@@ -197,12 +192,12 @@ uint32_t GBA::memory_access(Arm::MemOp mem_op){
             break;
         }
         case Arm::ldsb: {
-            load_val = (int32_t)*location;
+            load_val = (uint32_t)(int8_t)*location;
             break;
         }
         case Arm::ldsh: {
             load_val = *location;
-            load_val |= (int32_t)(*(location + 1)) << 8;
+            load_val |= (uint32_t)((int8_t)*(location + 1)) << 8;
             break;
         }
         case Arm::ldw: {
@@ -268,12 +263,14 @@ void GBA::draw_bit_map(){
     Color color;
     //The BG palette is just and array of 2byte colors that is 256 elements long
     for(uint32_t pixel = 0; pixel < 240 * 160; pixel++){
+  
         uint8_t palette_num = MEM.VRAM[pixel];
         color.palette_val = ((uint16_t)(MEM.palette[palette_num * 2 + 1]) << 8) | (MEM.palette[palette_num * 2]);
 
-        FRAME[(pixel * 4)] = (uint8_t)(color.Red / 31);
-        FRAME[(pixel * 4) + 1] = (uint8_t)(color.Green / 31);
-        FRAME[(pixel * 4) + 2] = (uint8_t)(color.Blue / 31);
-        FRAME[(pixel * 4) + 3] = 0xFF; //alpha
+        FRAME[(pixel * 4)] = (color.Red / 31.0f);
+        FRAME[(pixel * 4) + 1] = (color.Green / 31.0f);
+        FRAME[(pixel * 4) + 2] = (color.Blue / 31.0f);
+        FRAME[(pixel * 4) + 3] = 1.0f; //alpha
+
     }
 }

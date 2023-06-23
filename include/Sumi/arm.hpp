@@ -3,7 +3,7 @@
 #include <string>
 
 #define NOP -1
-#define REGSIZE 17
+#define REGSIZE 18
 
 #define SP 13
 #define LR 14
@@ -14,6 +14,12 @@
 #define BIT_Z 30 
 #define BIT_C 29 
 #define BIT_V 28 
+
+#define N_FIELD 0x1 << 31
+#define Z_FIELD 0x1 << 30
+#define C_FIELD 0x1 << 29
+#define V_FIELD 0x1 << 28
+
 
 #define BIT_L 24
 #define BIT_S 20
@@ -26,22 +32,24 @@
 #define GETNIBBLE(x, bit) (uint8_t)((x & (0xf << bit)) >> bit)
 #define TESTBIT(x, bit) (x & (0x1 << bit)) >> bit
 
+#define KEYINPUT 0x4000130
+
 class Arm {
 
     enum State {arm_mode, thumb_mode};
 
     //Program Status Registers
     union PSR  {
-        uint32_t double_word;
+        uint32_t word;
         struct {
-            uint8_t operating_mode : 5;
-            State operating_state : 1; //Thumb/Arm
-            uint8_t interrupt_disable : 2;
-            uint32_t : 20;
-            int V : 1; //overflow
-            int C : 1; //Carry / Borrow / Extend
-            int Z : 1; //Zero
-            int N : 1; //Negative / Less Than
+            unsigned int operating_mode : 5;
+            unsigned int operating_state : 1; //Thumb/Arm
+            unsigned int interrupt_disable : 2;
+            int : 20;
+            unsigned int V : 1; //overflow
+            unsigned int C : 1; //Carry / Borrow / Extend
+            unsigned int Z : 1; //Zero
+            unsigned int N : 1; //Negative / Less Than
         };
     };
 
@@ -53,7 +61,8 @@ class Arm {
         AND, EOR, SUB, RSB, ADD, ADC, SBC, RSC,
         TST, TEQ, CMP, CMN, ORR, MOV, BIC, MVN,
         B, UNDEF, UNIMP, MRS, MSR, BX, LDR, STR,
-        SWI, LDRH, STRH, LDRSB, LDRSH,
+        SWI, LDRH, STRH, LDRSB, LDRSH, LDM, STM,
+        MSRf, SWP
     };
 
     
@@ -93,7 +102,7 @@ class Arm {
             uint32_t data; //on store
         };
 
-    uint32_t rf[17]; //register file
+    uint32_t rf[REGSIZE]; //register file
     //I don't need to store memory here I believe, I need only a memory access handler
     
     uint32_t (*MMU)(Arm::MemOp mem_op);
@@ -105,7 +114,7 @@ class Arm {
 
     uint32_t fetch();
     InstructionMnemonic decode(uint32_t instruction);
-    bool condition_pass(ConditionField condition);
+    bool condition_pass(ConditionField condition, bool print_out=false);
     void execute(uint32_t instruction, InstructionMnemonic mnemonic);
     
     public:
@@ -118,6 +127,8 @@ class Arm {
             b_1,  // B{L} <expression>
             b_2,  // BX Rn
             ldst,
+            ldstM,
+            swp, //Rd,Rm,[Rn]
             NOOP, // ?
         }; 
         
@@ -185,6 +196,7 @@ class Arm {
                 unsigned int ldst_U : 1; //Up/Down bit
                 unsigned int ldst_P : 1; //Pre/Post Indexing bit
                 unsigned int ldst_I : 1; // Immediate Offset Toggle
+                unsigned int ldst_identifier : 2; //valid:　０１ 
             };
 
             struct {
@@ -211,22 +223,37 @@ class Arm {
             struct {
                 unsigned int ldstx_offset_1 : 4;
             };
+
+            struct {
+                unsigned int ldstM_register_list : 16;
+                unsigned int ldstM_Rn : 4;
+                unsigned int ldstM_L : 1;
+                unsigned int ldstM_W : 1;
+                unsigned int ldstM_S : 1;
+                unsigned int ldstM_U : 1;
+                unsigned int ldstM_P : 1;
+                unsigned int ldstM_valid : 3; //0B100 for STM/LDM
+            };
             
         };
 
-        void dump_instructions_attributes(InstructionAttributes inst, DisplayTypes type);
+        uint32_t get_pc() const;
         void reset();
         void step();
-        void register_dump(char* buffer) const;
+        void disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr = 0);
         void rom_dump(char* buffer);
         void set_MMU(void* func_ptr);
-        uint32_t get_pc() const;
-        void disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr = 0);
         void set_reg(uint16_t reg, uint32_t value);
+        void register_dump(char* buffer) const;
+        void dump_instructions_attributes(InstructionAttributes inst, DisplayTypes type);
+        void info(uint32_t instruction);
+        
+    
     private:
-        uint32_t get_operand_2(InstructionAttributes inst); //data processing
+        std::pair<uint32_t, uint8_t> get_operand_2(InstructionAttributes inst); //data processing
         uint32_t get_mem_address(InstructionAttributes inst, uint32_t instruction_addr = 0, bool offset_only=false);
         DisplayTypes get_display_type(InstructionMnemonic mnemonic);
+        void update_psr_flags(std::pair<uint32_t, uint8_t> outcome, bool logical);
 };
     
 
