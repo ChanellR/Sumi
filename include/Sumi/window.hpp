@@ -26,8 +26,4 @@ struct EmulatorData {
     std::map<uint16_t, uint8_t> key_presses;
 };
 
-
-
-int run_app(Arm* arm_handle, GBA* gba_handle);
-template <typename F>
-void repeat(unsigned n, F f);
+int run_app(ARMCore* arm_handle, GBA* gba_handle);

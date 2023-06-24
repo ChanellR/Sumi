@@ -13,20 +13,19 @@
 #include <windows.h>
 #include "../include/Sumi/window.hpp"
 
-void framebuffer_size_callback(GLFWwindow* window, int width, int height);
-bool test_key_press(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses);
-bool LoadTextureFromFile(const char* filename, GLuint* out_texture, int* out_width, int* out_height);
-void open_memory_table(GBA* gba_handle, uint32_t base_address);
-static void ShowMainMenuBar(Arm* arm_handle, GBA* gba_handle);
+void FramebufferSizeCallback(GLFWwindow* window, int width, int height);
+bool TestKeyPress(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses);
+void OpenMemoryTable(GBA* gba_handle, uint32_t base_address);
+static void ShowMainMenuBar(ARMCore* arm_handle, GBA* gba_handle);
 
 // settings
 const unsigned int SCR_WIDTH = 1000;
 const unsigned int SCR_HEIGHT = 800;
 
-EmulatorSettings settings {true, true, false, true, true, true, true, false, 0x02000000};
+EmulatorSettings settings {true, true, false, true, true, true, true, false, 0x05000000};
 EmulatorData data {0};
 
-int run_app(Arm* arm_handle, GBA* gba_handle)
+int run_app(ARMCore* arm_handle, GBA* gba_handle)
 {
     const char* glsl_version = "#version 130";
 
@@ -49,7 +48,7 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
     }
 
     glfwMakeContextCurrent(window);
-    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetFramebufferSizeCallback(window, FramebufferSizeCallback);
 
     // glad: load all OpenGL function pointers
     // ---------------------------------------
@@ -67,9 +66,9 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
-
-    arm_handle->register_dump(data.reg_dump_buffer);
-    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->rf[SP]);
+    
+    arm_handle->RegisterDump(data.reg_dump_buffer);
+    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
 
     float test_image[20*20*4];
 
@@ -94,20 +93,18 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
         ImGui::NewFrame();
 
         if(settings.running) {
-            for(int inst = 0; inst < 0xFFF; inst++){
-                arm_handle->step();
-                //testing for things 
-                
-                if((data.breakpoints.count(arm_handle->get_pc()) == 1)) {
-                    arm_handle->register_dump(data.reg_dump_buffer);
-                    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->rf[SP]);
+            for(int inst = 0; inst < 0x1FF; inst++){
+                arm_handle->Step();
+                if((data.breakpoints.count(arm_handle->GetReg(PC)) == 1)) {
+                    arm_handle->RegisterDump(data.reg_dump_buffer);
+                    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
                     settings.running = false;
                     break;
                 }   
             }
             gba_handle->draw_bit_map();
         }
-        
+
         ShowMainMenuBar(arm_handle, gba_handle);
         
         if(settings.enable_debug){
@@ -121,22 +118,23 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
             if(settings.enable_instructions){
                 ImGui::Begin("Instruction Memory");
                 ImGui::BeginChild("Scrolling");
-                
+                ARM::State current_state = arm_handle->GetOperatingState();
                 {
-                    uint32_t pc = arm_handle->get_pc();
+                    uint32_t pc = arm_handle->GetReg(PC);
                     for (int word = -10; word < 10; word++){
-                        if((int32_t)(pc + (word*4)) < 0) continue;
+                        uint32_t addr = (pc + (word*((current_state) ? 2 : 4)));
+                        if(addr < 0) continue;
 
-                        char mnemonic[55];
-                        Arm::MemOp fetch_operation {pc + (word*4), Arm::ldw};
+                        char mnemonic[70];
+                        ARM::MemOp fetch_operation {addr, (current_state) ? ARM::ldh : ARM::ldw};
                         uint32_t instruction = arm_handle->MMU(fetch_operation);
 
-                        arm_handle->disassemble(mnemonic, instruction, (pc + (word*4))); 
+                        arm_handle->Disassemble(mnemonic, instruction, addr); 
 
                         if (word == 0) {
-                            ImGui::TextColored(ImVec4(0,1,0.6,0.9),"0x%08X: 0x%08X  %s", pc + (4*word), instruction, mnemonic);
+                            ImGui::TextColored(ImVec4(0,1,0.6,0.9),"0x%08X: 0x%08X  %s", addr, instruction, mnemonic);
                         } else {
-                            ImGui::Text("0x%08X: 0x%08X  %s", pc + (4*word), instruction, mnemonic);
+                            ImGui::Text("0x%08X: 0x%08X  %s", addr, instruction, mnemonic);
                         }
                     }
                 }
@@ -157,7 +155,7 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
             if(settings.enable_memory){
                 ImGui::Begin("Memory Viewer");
                 ImGui::InputInt("Search", &settings.search_address, 0, 0, input_text_flags);
-                open_memory_table(gba_handle, settings.search_address);
+                OpenMemoryTable(gba_handle, settings.search_address);
                 ImGui::End();
             }
 
@@ -177,22 +175,22 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
         glfwPollEvents();
 
         if(settings.enable_debug){
-            if(test_key_press(window, GLFW_KEY_F10, data.key_presses)) {
+            if(TestKeyPress(window, GLFW_KEY_F10, data.key_presses)) {
                 //step debugger
-                arm_handle->step();
-                arm_handle->register_dump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->rf[SP]);
+                arm_handle->Step();
+                arm_handle->RegisterDump(data.reg_dump_buffer);
+                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
                 gba_handle->draw_bit_map();
             }
-            if(test_key_press(window, GLFW_KEY_F9, data.key_presses)) {
+            if(TestKeyPress(window, GLFW_KEY_F9, data.key_presses)) {
                 settings.running = !settings.running;
             }
-            if(test_key_press(window, GLFW_KEY_F5, data.key_presses)) {
-                //reset
-                arm_handle->reset(); 
-                gba_handle->reset();
-                arm_handle->register_dump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->rf[SP]);
+            if(TestKeyPress(window, GLFW_KEY_F5, data.key_presses)) {
+                //Reset
+                arm_handle->Reset(); 
+                gba_handle->Reset();
+                arm_handle->RegisterDump(data.reg_dump_buffer);
+                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
                 gba_handle->draw_bit_map();
             }
         } 
@@ -221,12 +219,12 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
                     // printf("key_pressed: %i\n", button);
                 }
             }
-            Arm::MemOp store_keypad {KEYINPUT, Arm::strh, keys_pressed};
+            ARM::MemOp store_keypad {KEYINPUT, ARM::strh, keys_pressed};
             gba_handle->memory_access(store_keypad);
         }
 
-        if(test_key_press(window, GLFW_KEY_ESCAPE, data.key_presses)) glfwSetWindowShouldClose(window, true);
-        if(test_key_press(window, GLFW_KEY_F4, data.key_presses)) data.breakpoints.clear();
+        if(TestKeyPress(window, GLFW_KEY_ESCAPE, data.key_presses)) glfwSetWindowShouldClose(window, true);
+        if(TestKeyPress(window, GLFW_KEY_F4, data.key_presses)) data.breakpoints.clear();
 
         //load bitmap texture
         glTexImage2D(
@@ -265,7 +263,7 @@ int run_app(Arm* arm_handle, GBA* gba_handle)
 }
 
 //single press key stroke testing
-bool test_key_press(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses){
+bool TestKeyPress(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses){
     uint8_t current_state = glfwGetKey(window, key);
     if(current_state == GLFW_RELEASE && last_presses[key] == GLFW_PRESS){
         last_presses[key] = current_state;
@@ -277,7 +275,7 @@ bool test_key_press(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t
 
 // glfw: whenever the window size changed (by OS or user resize) this callback function executes
 // ---------------------------------------------------------------------------------------------
-void framebuffer_size_callback(GLFWwindow* window, int width, int height)
+void FramebufferSizeCallback(GLFWwindow* window, int width, int height)
 {
     // make sure the viewport matches the new window dimensions; note that width and 
     // height will be significantly larger than specified on retina displays.
@@ -286,7 +284,7 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 
 
 
-void open_memory_table(GBA* gba_handle, uint32_t base_address){
+void OpenMemoryTable(GBA* gba_handle, uint32_t base_address){
 
     static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
@@ -307,7 +305,7 @@ void open_memory_table(GBA* gba_handle, uint32_t base_address){
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("0x%08X", row);
             ImGui::TableSetColumnIndex(1);
-            Arm::MemOp op {row, Arm::ldw};
+            ARM::MemOp op {row, ARM::ldw};
             if(row == base_address) {
                 ImGui::TextColored(ImVec4(0,1,0.6,0.9), "0x%08X", gba_handle->memory_access(op));
             } else {
@@ -320,7 +318,7 @@ void open_memory_table(GBA* gba_handle, uint32_t base_address){
 
 }
 
-void ShowMainMenuBar(Arm* arm_handle, GBA* gba_handle)
+static void ShowMainMenuBar(ARMCore* arm_handle, GBA* gba_handle)
 {
     if (ImGui::BeginMainMenuBar())
     {
@@ -334,11 +332,11 @@ void ShowMainMenuBar(Arm* arm_handle, GBA* gba_handle)
         if (ImGui::BeginMenu("Emulation"))
         {
             if (ImGui::MenuItem("Reset", "F5")) {
-                //reset
-                arm_handle->reset(); 
-                gba_handle->reset();
-                arm_handle->register_dump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->rf[SP]);
+                //Reset
+                arm_handle->Reset(); 
+                gba_handle->Reset();
+                arm_handle->RegisterDump(data.reg_dump_buffer);
+                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
                 gba_handle->draw_bit_map();
             }
             if (ImGui::MenuItem("Run", "F9")) {
@@ -346,9 +344,9 @@ void ShowMainMenuBar(Arm* arm_handle, GBA* gba_handle)
             }
             if (ImGui::MenuItem("Step In", "F10")) {
                 //step debugger
-                arm_handle->step();
-                arm_handle->register_dump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->rf[SP]);
+                arm_handle->Step();
+                arm_handle->RegisterDump(data.reg_dump_buffer);
+                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
                 gba_handle->draw_bit_map();
             }
             ImGui::EndMenu();
@@ -373,39 +371,4 @@ void ShowMainMenuBar(Arm* arm_handle, GBA* gba_handle)
         }
         ImGui::EndMainMenuBar();
     }
-}
-
-// Simple helper function to load an image into a OpenGL texture with common settings
-bool LoadTextureFromFile(const char* filename, GLuint* out_texture, int* out_width, int* out_height)
-{
-    // Load from file
-    int image_width = 0;
-    int image_height = 0;
-    unsigned char* image_data = stbi_load(filename, &image_width, &image_height, NULL, 4);
-    if (image_data == NULL)
-        return false;
-
-    // Create a OpenGL texture identifier
-    GLuint image_texture;
-    glGenTextures(1, &image_texture);
-    glBindTexture(GL_TEXTURE_2D, image_texture);
-
-    // Setup filtering parameters for display
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); // This is required on WebGL for non power-of-two textures
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); // Same
-
-    // Upload pixels into texture
-#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-#endif
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image_width, image_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data);
-    stbi_image_free(image_data);
-
-    *out_texture = image_texture;
-    *out_width = image_width;
-    *out_height = image_height;
-
-    return true;
 }

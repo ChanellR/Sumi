@@ -1,18 +1,16 @@
 #include "../include/Sumi/arm.hpp"
+
 #include <cstdio>
 #include <iostream>
 #include <string>
 #include <stdint.h>
 #include <assert.h>
-
 #include <cstring>
+#include <tuple>
 
-template <typename F>
-void repeat(unsigned n, F f) {
-    while (n--) f();
-}
+using namespace ARM;
 
-void Arm::reset(){
+void ARMCore::Reset(){
     //sets all registers to 0
     memset(rf, 0, 4*17);
     //for now
@@ -22,31 +20,259 @@ void Arm::reset(){
     rf[CPSR] = 0x0000001F; //user mode
 }
 
-void Arm::info(uint32_t instruction){
-    Arm::InstructionAttributes inst;
-    inst.word = instruction;
-    char Disassembly[20];
-    InstructionMnemonic mnemonic = decode(instruction);
-    DisplayTypes type = get_display_type(mnemonic);
-    disassemble(Disassembly, inst.word);
-    printf("instruction: 0x%X %s\n",instruction, Disassembly);
-    printf("mnemonic: %d display type: %d\n", mnemonic, type);
-    printf("Imm?: %X type: 0x%X reg?: %u shift_reg:%u shift_amount:0x%X base_reg: %u \n",
-    inst.dp_I, inst.dp_shift_type, inst.dp_reg_shift, inst.dp_Rs, inst.dp_shift_amount, inst.dp_Rm);
+
+void ARMCore::SetMMU(void* func_ptr){
+    MMU = (uint32_t(*)(MemOp)) func_ptr;
 }
 
-uint32_t Arm::fetch(){
-    //just fetching double-words for now
-    MemOp fetch_operation = {rf[PC], ldw};
+void ARMCore::SetReg(uint16_t reg, uint32_t value){
+    rf[reg] = value;
+}
+
+uint32_t ARMCore::GetReg(uint16_t reg) const{
+    return rf[reg];
+}
+
+inline State ARMCore::GetOperatingState() const {
+    PSR cpsr {rf[CPSR]};
+    return State(cpsr.operating_state); //1: Thumb 0: Arm
+}
+
+
+uint32_t ARMCore::Fetch(State current_state){
+    MemOp fetch_operation {rf[PC], (current_state) ? ldh : ldw, 0};
     uint32_t instruction = MMU(fetch_operation);
-    rf[PC] += 4;
+    rf[PC] += (current_state) ? 2 : 4;
     return instruction;
 }
 
-bool Arm::condition_pass(ConditionField condition, bool print_out){
-    PSR cpsr;
-    cpsr.word = rf[CPSR];
-    bool outcome;
+
+std::pair<InstructionMnemonic, uint16_t> ARMCore::Decode(uint32_t instruction) const{
+
+    const InstructionAttributes attributes {instruction};
+
+
+    //TODO;
+    //MUL, Coprocessor
+
+    if(attributes.ldstM_valid == 0B100) return std::make_pair((attributes.ldstM_L) ? LDM : STM, 0);
+    if(attributes.ldst_identifier == 0B01) return std::make_pair((attributes.ldst_L) ? LDR : STR, 0);
+    
+    if(MATCH(instruction & 0xe0000010, 0x60000010)) return std::make_pair(UNDEF, 0);
+    if(MATCH(instruction & 0x0ffffff0, 0x012FFF10)) return std::make_pair(BX, 0);
+    if(MATCH(instruction & 0x0F000000, 0x0F000000)) return std::make_pair(SWI, 0);
+    if(MATCH(instruction & 0x0E000000, 0x0A000000)) return std::make_pair(B, 0);
+
+    //Halfword and Signed Data Transfer && SWP && MUL
+    if (attributes.ldstx_valid_3 == 0 && attributes.ldstx_valid_2 && attributes.ldstx_valid_1) {
+        if(attributes.ldstx_SH == 0){
+            //MUL && SWP
+            if(MATCH(instruction & 0x0FB00FF0, 0x01000090)){
+                return std::make_pair(SWP, 0);
+            }
+            if(attributes.mul_identifier_2 == 0){
+                if(attributes.mul_A) {
+                    return std::make_pair(MUL, 0);
+                } else return std::make_pair(MLA, 0);
+            }
+            if(attributes.mull_identifier_2 == 1){
+                if(attributes.mull_A) {
+                    return std::make_pair(MULL, 0);
+                } else return std::make_pair(MLAL, 0);
+            }
+
+        } else if(attributes.ldstx_L){
+            //load
+            if(!attributes.ldstx_immediate_type && attributes.ldstx_offset_2 == 0) {
+                //register offset
+                switch(attributes.ldstx_SH){
+                    case 0B01: return std::make_pair(LDRH, 0);
+                    case 0B10: return std::make_pair(LDRSB, 0); 
+                    case 0B11: return std::make_pair(LDRSH, 0);
+                }
+            } else if (attributes.ldstx_immediate_type) {
+                //immediate offset
+                switch(attributes.ldstx_SH){
+                    case 0B01: return std::make_pair(LDRH, 0);
+                    case 0B10: return std::make_pair(LDRSB, 0); 
+                    case 0B11: return std::make_pair(LDRSH, 0);
+                }
+            }
+
+        } else {
+            //store
+            if(!attributes.ldstx_immediate_type && attributes.ldstx_offset_2 == 0) {
+                //register offset
+                return std::make_pair(STRH, 0);
+            } else if (attributes.ldstx_immediate_type) {
+                //immediate offset
+                return std::make_pair(STRH, 0);
+            }
+        }
+    }
+
+    if(attributes.dp_valid == 0){
+        //checks for Immediate offset or register with proper_validation_bits
+        //0B1110_00_1_1010_1_0010_0000_0000_00111001 
+        // printf("Imm_type: %u\n", attributes.dp_I);
+        if(attributes.dp_I || ((!attributes.dp_reg_padding_bit && attributes.dp_reg_shift) || !attributes.dp_reg_shift)){
+            InstructionMnemonic prelim_type = (InstructionMnemonic)attributes.dp_OpCode;
+            // printf("prelim_type: %u\n", prelim_type);
+            // printf("S: %d\n", attributes.dp_S);
+            // 0xE128F00A
+            //0B1110_00_0_10_0_1010001111_00000000_1010
+            if(prelim_type == TEQ || prelim_type == TST || prelim_type == CMN || prelim_type == CMP){
+                if(!attributes.dp_S){
+                    if(MATCH(instruction & 0x0FBF0FFF, 0x010F0000)){
+                        //transfer PSR contents to a register
+                        return std::make_pair(MRS, 0);
+                    } else if (MATCH(instruction & 0x0FBFFFF0, 0x0129F000)){
+                        //transfer register contents to PSR
+                        return std::make_pair(MSR, 0);
+                    } else if (MATCH(instruction & 0x0DBFF000, 0x0128F000)){
+                        //transfer register contents or immediate value 
+                        //to flag bits only
+                        return std::make_pair(MSRf, 0);
+                    } 
+                } 
+
+            } 
+            return std::make_pair(prelim_type, 0);
+        }
+    }
+
+    return std::make_pair(UNIMP, 0);
+}
+
+
+std::pair<InstructionMnemonic, uint16_t> ARMCore::Decode_T(uint16_t instruction) const{
+    const InstructionAttributes attributes {instruction};
+
+    if(attributes.t_f1_indentifier == 0B000){ //Register Offset
+        if(attributes.t_f1_Opcode == 0B11){ //add/subtract
+            return std::make_pair((attributes.t_f2_Opcode == 0) ? ADD : SUB, 2);
+        }
+        return std::make_pair(MOV, 1);
+    }
+
+    if(attributes.t_f3_indentifier == 0B001){ //Immediate Offset
+        switch(attributes.t_f3_Opcode){
+            case 0B00: return std::make_pair(MOV, 3);
+            case 0B01: return std::make_pair(CMP, 3);
+            case 0B10: return std::make_pair(ADD, 3);
+            case 0B11: return std::make_pair(SUB, 3);
+        }
+    }
+
+    if(attributes.t_f4_identifier == 0B010000){
+        switch(attributes.t_f4_Opcode){
+            case 0B0000: return std::make_pair(AND, 4);
+            case 0B0001: return std::make_pair(EOR, 4);
+            case 0B0010: return std::make_pair(MOV, 4);
+            case 0B0011: return std::make_pair(MOV, 4);
+            case 0B0100: return std::make_pair(MOV, 4);
+            case 0B0101: return std::make_pair(ADC, 4);
+            case 0B0110: return std::make_pair(SBC, 4);
+            case 0B0111: return std::make_pair(MOV, 4);
+            case 0B1000: return std::make_pair(TST, 4);
+            case 0B1001: return std::make_pair(RSB, 4);
+            case 0B1010: return std::make_pair(CMP, 4);
+            case 0B1011: return std::make_pair(CMN, 4);
+            case 0B1100: return std::make_pair(ORR, 4);
+            case 0B1101: return std::make_pair(MUL, 4);
+            case 0B1110: return std::make_pair(BIC, 4);
+            case 0B1111: return std::make_pair(MVN, 4);
+        }
+    }
+
+    if(attributes.t_f5_identifier == 0B010001){
+        switch(attributes.t_f5_Opcode){
+            case 0B00: return std::make_pair(ADD, 5);
+            case 0B01: return std::make_pair(CMP, 5);
+            case 0B10: return std::make_pair(MOV, 5);
+            case 0B11: if(attributes.t_H1 == 0) return std::make_pair(BX, 5);
+        }
+    }
+
+    if(attributes.t_f6_identifier == 0B01001) return std::make_pair(LDR, 6);
+
+    if(attributes.t_f7_identifier2 == 0B0101 && attributes.t_f7_identifier1 == 0B0) {
+        switch(attributes.t_L << 1 | attributes.t_f7_B){
+            case 0B00: return std::make_pair(STR, 7);
+            case 0B01: return std::make_pair(STR, 7); //byte
+            case 0B10: return std::make_pair(LDR, 7);
+            case 0B11: return std::make_pair(LDR, 7);
+        } //fine
+    }
+
+    if(attributes.t_f8_identifier2 == 0B0101 && attributes.t_f8_identifier1 == 0B1) { //register offset
+        switch(attributes.t_f8_S << 1 | attributes.t_H){
+            case 0B00: return std::make_pair(STR, 8);
+            case 0B01: return std::make_pair(LDRH, 8);
+            case 0B10: return std::make_pair(LDRSB, 8);
+            case 0B11: return std::make_pair(LDRSH, 8);
+        } //fine
+    }
+
+    if(attributes.t_f910_identifier == 0B011){ //immediate offset
+        switch(attributes.t_L << 1 | attributes.t_f910_B){
+            case 0B00: return std::make_pair(STR, 9);
+            case 0B01: return std::make_pair(LDR, 9); 
+            case 0B10: return std::make_pair(STR, 9);
+            case 0B11: return std::make_pair(LDR, 9); //byte immediate
+        } //fine
+    }
+
+    if(attributes.t_f910_identifier == 0B100 && attributes.t_f910_B == 0B0){ //immediate offset
+        switch(attributes.t_L){
+            case 0B00: return std::make_pair(STRH, 10);
+            case 0B01: return std::make_pair(LDRH, 10); 
+        } //fine
+    }
+
+    if(attributes.t_f11_identifier == 0B1001){ //SP-relative 
+        switch(attributes.t_L){
+            case 0B00: return std::make_pair(STR, 11);
+            case 0B01: return std::make_pair(LDR, 11); 
+        } //fine
+    }
+    
+    if(attributes.t_f12_identifier == 0B1010){
+        return std::make_pair(ADD, 12);
+    }
+
+    if(attributes.t_f13_identifier == 0B10110000){
+        return std::make_pair((attributes.t_f13_S) ? SUB : ADD, 13);
+    }
+
+    if(attributes.t_f14_identifier2 == 0B1011 && attributes.t_f14_identifier1 == 0B10){ //immediate offset
+        switch(attributes.t_L << 1 | attributes.t_f14_R){
+            case 0B00: return std::make_pair(STM, 14);
+            case 0B01: return std::make_pair(STM, 14); 
+            case 0B10: return std::make_pair(LDM, 14);
+            case 0B11: return std::make_pair(LDM, 14); //byte immediate
+        } //fine
+    }
+
+    if(attributes.t_f15_identifier == 0B1100){
+        return std::make_pair((attributes.t_L) ? LDM : STM, 15);
+    }
+
+    if(attributes.t_f16_identifier == 0B1101) return std::make_pair(B, 16);
+
+    if(attributes.t_f17_identifier == 0B11011111) return std::make_pair(SWI, 17);
+
+    if(attributes.t_f18_identifier == 0B11100) return std::make_pair(B, 18);
+
+    if(attributes.t_f19_identifier == 0B1111) return std::make_pair(B, 19);
+
+    return std::make_pair(UNIMP, 0);
+}
+
+
+bool ARMCore::Condition(uint8_t condition) const{
+    PSR cpsr {rf[CPSR]};
+    bool outcome = false;
     switch (condition)
     {
         case EQ: outcome = cpsr.Z; break;
@@ -64,551 +290,454 @@ bool Arm::condition_pass(ConditionField condition, bool print_out){
         case GT: outcome = !cpsr.Z && (cpsr.N == cpsr.V);  break;
         case LE: outcome = cpsr.Z || (cpsr.N != cpsr.V);  break;
         case AL: outcome = true;  break;
-        default:
-        outcome = false;
     }
-    // if(rf[PC] >= 0x08000D04 && rf[PC] <= 0x08000D20) printf("bool: %i conditition: %d\n", outcome, condition);
     return outcome;
 }
 
-void Arm::set_reg(uint16_t reg, uint32_t value){
-    rf[reg] = value;
+
+void ARMCore::Execute(Instruction inst){
+
+    //Check Condition
+    if(!Condition(inst.attributes.Cond)) return;
+    
+    //Most data processes follow the same flag 
+    //setting criteria when activated
+    //will seperate into similar sections
+
+    switch (inst.mnemonic)
+    {
+        case AND: case EOR: case SUB: case RSB: 
+        case ADD: case ADC: case SBC: case RSC: 
+        case TST: case TEQ: case CMP: case CMN: 
+        case ORR: case MOV: case BIC: case MVN:
+        case MRS: case MSR: case MSRf: {
+            return DataProcessingInstruction(inst);  
+        }
+        case B: case BX: {
+            return BranchInstruction(inst);
+        }
+        case LDRH: case STRH: case LDRSB: case LDRSH: 
+        case LDM: case STM: case LDR: case STR: case SWP: {
+            return DataTransferInstruction(inst);
+        }
+        case MUL: case MLA: case MULL: case MLAL: {
+            return MultiplyInstruction(inst);
+        }
+        case UNDEF: case UNIMP:{
+            return;
+        }
+    }
 }
 
-Arm::InstructionMnemonic Arm::decode(uint32_t instruction){
 
-    InstructionAttributes inst;
-    inst.word = instruction;
+void ARMCore::Step(){
 
-    //TODO;
-    //MUL, SWP, Coprocessor
-    if(inst.ldstM_valid == 0B100) return (inst.ldstM_L) ? LDM : STM;
-    
-    if(MATCH(instruction & 0xe0000010, 0x60000010)) return UNDEF;
-    if(MATCH(instruction & 0x0ffffff0, 0x012FFF10)) return BX;
-    if(MATCH(instruction & 0x0F000000, 0x0F000000)) return SWI;
-    if (MATCH(instruction & 0x0E000000, 0x0A000000)) return B;
+    State current_state = GetOperatingState();
+    uint32_t instruction = Fetch(current_state);
 
-    if(inst.ldst_identifier == 0B01){
-        return (inst.ldst_L) ? LDR : STR;
+    uint16_t format;
+    InstructionMnemonic mnem;
+    std::tie(mnem, format) = (current_state) ? Decode_T(instruction) : Decode(instruction);
+    Instruction inst {mnem, instruction, rf[PC] - ((current_state) ? 2 : 4), format};
+
+    Execute(inst);
+}
+
+
+uint32_t ARMCore::GetMemAddress(Instruction inst, bool offset_only) const{
+    uint32_t addr_offset = 0;
+    /*
+        Write-back must not be specified if R15 is specified as the base register (Rn). When
+        using R15 as the base register you must remember it contains an address 8 bytes on
+        from the address of the current instruction.
+        R15 must not be specified as the register offset (Rm).
+        When R15 is the source register (Rd) of a register store (STR) instruction, the stored
+        value will be address of the instruction plus 12.
+    */
+    // assert(!(inst.ldst_W && inst.ldst_Rn == PC));
+    // assert(inst.ldst_Rm != PC);
+
+    if(inst.attributes.ldst_I){
+        inst.attributes.ldst_I = 0;
+        std::pair<uint32_t, uint8_t> out;
+        out = GetOperand(inst);
+        addr_offset = out.second;
+        inst.attributes.ldst_I = 1;
+    } else {
+        addr_offset = inst.attributes.ldst_Imm;
     }
-    
-    //Halfword and Signed Data Transfer && SWP && MUL
-    if (inst.ldstx_valid_3 == 0 &&  inst.ldstx_valid_2 && inst.ldstx_valid_1) {
-        if(inst.ldstx_SH == 0){
-            //MUL && SWP
-            if(MATCH(instruction & 0x0FB00FF0, 0x01000090)){
-                return SWP;
-            }
-        } else if(inst.ldstx_L){
-            //load
-            if(!inst.ldstx_immediate_type && inst.ldstx_offset_2 == 0) {
-                //register offset
-                switch(inst.ldstx_SH){
-                    case 0B01: return LDRH;
-                    case 0B10: return LDRSB; 
-                    case 0B11: return LDRSH;
-                }
-            } else if (inst.ldstx_immediate_type) {
-                //immediate offset
-                switch(inst.ldstx_SH){
-                    case 0B01: return LDRH;
-                    case 0B10: return LDRSB; 
-                    case 0B11: return LDRSH;
-                }
-            }
 
-        } else {
-            //store
-            if(!inst.ldstx_immediate_type && inst.ldstx_offset_2 == 0) {
+    switch(inst.mnemonic){
+        case LDRH: case STRH: case LDRSB: case LDRSH: {
+            if(!inst.attributes.ldstx_immediate_type && inst.attributes.ldstx_offset_2 == 0) {
                 //register offset
-                return STRH;
-            } else if (inst.ldstx_immediate_type) {
+                addr_offset = rf[inst.attributes.ldstx_Rm];
+            } else if (inst.attributes.ldstx_immediate_type) {
                 //immediate offset
-                return STRH;
+                addr_offset = (inst.attributes.ldstx_offset_2 << 4) | inst.attributes.ldstx_offset_1;
             }
         }
     }
 
-    if(inst.dp_valid == 0){
-        //checks for Immediate offset or register with proper_validation_bits
-        //0B1110_00_1_1010_1_0010_0000_0000_00111001 
-        // printf("Imm_type: %u\n", inst.dp_I);
-        if(inst.dp_I || ((!inst.dp_reg_padding_bit && inst.dp_reg_shift) || !inst.dp_reg_shift)){
-            InstructionMnemonic prelim_type = (InstructionMnemonic)inst.dp_OpCode;
-            // printf("prelim_type: %u\n", prelim_type);
-            // printf("S: %d\n", inst.dp_S);
-            // 0xE128F00A
-            //0B1110_00_0_10_0_1010001111_00000000_1010
-            if(prelim_type == TEQ || prelim_type == TST || prelim_type == CMN || prelim_type == CMP){
-                if(!inst.dp_S){
-                    if(MATCH(instruction & 0x0FBF0FFF, 0x010F0000)){
-                        //transfer PSR contents to a register
-                        return MRS;
-                    } else if (MATCH(instruction & 0x0FBFFFF0, 0x0129F000)){
-                        //transfer register contents to PSR
-                        return MSR;
-                    } else if (MATCH(instruction & 0x0DBFF000, 0x0128F000)){
-                        //transfer register contents or immediate value 
-                        //to flag bits only
-                        return MSRf;
-                    } 
-                } 
+    if(offset_only) return addr_offset;
 
-            } 
-            return prelim_type;
-        }
-    }
-
-    return UNIMP;
+    uint32_t base = (inst.attributes.ldst_Rn == PC) ? inst.address + 0x8 : rf[inst.attributes.ldst_Rn]; //8 for pipeline waiting
+    uint32_t addr = (inst.attributes.ldst_U) ? base + addr_offset : base - addr_offset;
+    return addr;
 }
 
-void Arm::disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr){
-    //for translating into readable syntax
-    InstructionMnemonic mnemonic = decode(instruction);
-    DisplayTypes type = get_display_type(mnemonic);
 
-    // printf("mnemonic: %d display type: %d\n", mnemonic, type);
-    InstructionAttributes inst;
-    inst.word = instruction;
+std::pair<uint32_t, uint8_t> ARMCore::GetOperand(Instruction inst) const {
+    //Derives Operand 2 for Data Processing Instructions
 
+    PSR cpsr {rf[CPSR]};
 
-#define HEADERBEGIN 0x08000000
-#define HEADEREND 0x080000C0
-    if(instruction_addr > HEADERBEGIN && instruction_addr < HEADEREND) {
-        sprintf(buffer, "dd");
-        return;
-    }
+    uint8_t carry_out = cpsr.C;
+    uint32_t result = 0;
 
-    //will add more later
-    const char* instruction_stems[] {
-        "AND","EOR","SUB","RSB","ADD","ADC","SBC","RSC",
-        "TST","TEQ","CMP","CMN","ORR","MOV","BIC","MVN",
-        "B","UNDEF","UNIMP", "MRS", "MSR", "BX", "LDR",
-        "STR", "SWI", "LDRH", "STRH", "LDRSB", "LDRSH", 
-        "LDM", "STM", "MSRf", "SWP"
-    };
+    if(inst.attributes.dp_I){
+        //rotated immediate operand 2 
+        uint32_t imm = inst.attributes.dp_Imm;
+        uint8_t rotations = inst.attributes.dp_Rotate * 2;
+        for (uint8_t times = 0; times < rotations; times++){
+            carry_out = imm & 0x1;
+            imm >>= 1;
+            imm |= (carry_out << 31);
+        }
+        result = imm;
 
-    const char* conditions_extensions[] {
-        "EQ", //equal
-        "NE", //not equal
-        "CS", //unsigned higher or same
-        "CC", //unsigned lower
-        "MI", //negative
-        "PL", //positive or zero
-        "VS", //overflow
-        "VC", //no overflow
-        "HI", //unsigned higher
-        "LS", //unsigned lower or same
-        "GE", //greater or equal
-        "LT", //less than
-        "GT", //greater than
-        "LE", //less than or equal
-        "", //always
-    
-    };
-    // return;
-    const char* shift_type[]{"lsl", "lsr", "asr", "rr"};
-    switch(type){
-        case dp_1:{
-            uint16_t Rd = inst.dp_Rd;
-            uint16_t Rm = inst.dp_Rm;
-            if(mnemonic == MSR) Rd = CPSR;
-            if(mnemonic == MRS) Rm = CPSR;
+    } else {
 
-            if(!inst.dp_I){
-                if (inst.dp_reg_shift){
+        uint32_t reg_value = rf[inst.attributes.dp_Rm];
+        uint16_t shifts;
 
-                    sprintf(buffer, "%s%s%s r%u, r%u, %s r%u",
-                        instruction_stems[mnemonic],
-                        conditions_extensions[inst.Cond],
-                        (inst.dp_S) ? "S" : "",
-                        Rd, 
-                        Rm,
-                        shift_type[inst.dp_shift_type],
-                        inst.dp_Rs,
-                        get_operand_2(inst)
-                        );
+        if(inst.attributes.dp_reg_shift && !inst.attributes.dp_reg_padding_bit){
+            shifts = rf[inst.attributes.dp_Rs];
+        } else if(!inst.attributes.dp_reg_shift){
+            shifts = inst.attributes.dp_shift_amount;
+        } 
+
+        if(shifts == 0) return std::make_pair(reg_value, carry_out);
+
+        switch(inst.attributes.dp_shift_type){
+            case 0B00:{ //lsl
+                if(shifts > 31) {
+                    result = 0;
+                    carry_out = (shifts == 32) ? TESTBIT(reg_value, 0) : 0;
+                    break;
+                }
+                reg_value <<= (shifts - 1);
+                carry_out = (reg_value & 0x80000000) >> 31;
+                result = reg_value << 1;
+                break;
+            }
+            case 0B01:{ //lsr
+                if(shifts > 31) {
+                    result = 0;
+                    carry_out = (shifts == 32) ? TESTBIT(reg_value, 31) : 0;
+                    break;
+                }
+                reg_value >>= shifts - 1;
+                carry_out = (reg_value & 0x1);
+                result = reg_value >> 1;
+                break;
+            }
+            case 0B10:{ //asr
+                if (shifts < 32) {
+                    result = (uint32_t)(((int32_t)reg_value) >> shifts);
+                    carry_out = (reg_value >> shifts - 1) & 0x1;
                 } else {
-
-                    sprintf(buffer, "%s%s%s r%u, r%u, %s %Xh=%Xh",
-                        instruction_stems[mnemonic],
-                        conditions_extensions[inst.Cond],
-                        (inst.dp_S) ? "S" : "",
-                        Rd, 
-                        Rm,
-                        shift_type[inst.dp_shift_type],
-                        inst.dp_shift_amount,
-                        get_operand_2(inst)
-                        );
+                    carry_out = (reg_value & 0x80000000) ? 1 : 0;
+                    result = (reg_value & 0x80000000) ? -1 : 0;
                 }
-            } else {
-                sprintf(buffer, "%s%s%s r%u, %Xh",
-                    instruction_stems[mnemonic],
-                    conditions_extensions[inst.Cond],
-                    (inst.dp_S) ? "S" : "",
-                    Rd, get_operand_2(inst));
+                break;
             }
-            break;
-        }
-        case dp_2:{
-            if(!inst.dp_I && inst.dp_Shift == 0){
-                sprintf(buffer, "%s%s r%u, r%u",
-                instruction_stems[mnemonic],
-                conditions_extensions[inst.Cond],
-                inst.dp_Rn, inst.dp_Rm);
-            } else {
-                sprintf(buffer, "%s%s r%u, %Xh",
-                instruction_stems[mnemonic],
-                conditions_extensions[inst.Cond],
-                inst.dp_Rn, get_operand_2(inst));
+            case 0B11:{ //rr
+                for (uint8_t times = 0; times < shifts; times++){
+                    carry_out = reg_value & 0x1;
+                    reg_value >>= 1;
+                    reg_value |= (carry_out << 31);
+                }
+                result = reg_value;
+                break;
             }
-            break;
         }
-        case dp_3:{
-            if(!inst.dp_I ){
-                sprintf(buffer, "%s%s%s r%u, r%u, r%u, %s %Xh",
-                instruction_stems[mnemonic],
-                conditions_extensions[inst.Cond],
-                (inst.dp_S) ? "S" : "",
-                inst.dp_Rd, inst.dp_Rn, inst.dp_Rm,
-                shift_type[inst.dp_shift_type],
-                inst.dp_shift_amount
-                );
+    }
+
+    return std::make_pair(result, carry_out);
+    
+}
+
+
+void ARMCore::MultiplyInstruction(Instruction inst){
+    switch (inst.mnemonic)
+    { 
+        case MUL: case MLA: {
+            uint32_t mul_result = rf[inst.attributes.mul_Rm] * rf[inst.attributes.mul_Rs];
+            if(inst.attributes.mull_A) mul_result += rf[inst.attributes.mul_Rn];
+            rf[inst.attributes.mul_Rd] = mul_result;
+            if(inst.attributes.mul_S){
+                PSR cpsr {rf[CPSR]};
+                cpsr.N = (mul_result & (0x1 << 31)) ? 1 : 0;
+                cpsr.Z = (mul_result == 0);
+                rf[CPSR] = cpsr.word;
+            }  
+            return;
+        }
+        case MULL: case MLAL: {
+            int64_t mul_result = 0;
+
+            if(inst.attributes.mull_U){
+                //signed
+                mul_result = (int64_t)(int32_t)rf[inst.attributes.mull_Rm] * (int64_t)(int32_t)rf[inst.attributes.mull_Rs];
+                // if(rf[inst.attributes.mull_Rm] == 0x0DD37FB9) printf("RES: %X\n", mul_result);
+                if(inst.attributes.mull_A) mul_result += ((int64_t)(int32_t)rf[inst.attributes.mull_RdHi]) << 32 | (int64_t)(int32_t)rf[inst.attributes.mull_RdLo];
+                // printf("resHi: %X resLo: %X Op1: %X Op2: %X\n", res >> 32, res, Rm, Rs);
+                rf[inst.attributes.mull_RdHi] = mul_result >> 32;
             } else {
-                sprintf(buffer, "%s%s%s r%u, r%u, %Xh",
-                instruction_stems[mnemonic],
-                conditions_extensions[inst.Cond],
-                (inst.dp_S) ? "S" : "",
-                inst.dp_Rd, inst.dp_Rn, get_operand_2(inst));
+                //unsigned
+                mul_result = (uint64_t)rf[inst.attributes.mull_Rm] * (uint64_t)rf[inst.attributes.mull_Rs];
+                if(inst.attributes.mull_A) mul_result +=  (uint64_t)rf[inst.attributes.mull_RdHi] << 32 | (uint64_t)rf[inst.attributes.mull_RdLo];
+                rf[inst.attributes.mull_RdHi] = mul_result >> 32;
             }
-            break;
-        }
-        case b_1: {
-            sprintf(buffer, "B%s%s pc, %0Xh =%0Xh %s", //off by one sometimes, PIPELINE!
-                    (inst.branch_link) ? "L" : "",
-                    conditions_extensions[inst.Cond],
-                    inst.branch_offset,
-                    (uint32_t)(instruction_addr + (inst.branch_offset << 2) + 8),
-                    (condition_pass((ConditionField)inst.Cond)) ? "true;" : "false;"
-                ); 
-            break;
-        }
-        case b_2:{
-            if(rf[inst.branch_Rn] & 0x1){
-                sprintf(buffer, "BX%s [r%u] =%Xh THUMB",
-                conditions_extensions[inst.Cond],
-                 inst.branch_Rn, rf[inst.branch_Rn]);
-            } else {
-                sprintf(buffer, "BX%s [r%u] =%Xh ARM",
-                conditions_extensions[inst.Cond],
-                 inst.branch_Rn, rf[inst.branch_Rn]);
-            }
-            break;
-        }
-        case ldst: {
-            buffer += sprintf(buffer, "%s%s%s r%u, [r%u, %s%dh]", 
-                    instruction_stems[mnemonic],
-                    conditions_extensions[inst.Cond],
-                    (inst.ldst_B && (mnemonic == STR || mnemonic == LDR)) ? "B" : "",
-                    inst.ldst_Rd,
-                    inst.ldst_Rn,
-                    (inst.ldst_U) ? "" : "-",
-                    get_mem_address(inst, instruction_addr, true)
-                );
-            if(rf[PC] <= instruction_addr + 2) sprintf(buffer, "=%08Xh",
-                     (inst.ldst_P) ? get_mem_address(inst, instruction_addr) :
-                     rf[inst.ldst_Rn]);
-            break;
-        }
-        case ldstM: {
-            sprintf(buffer, "%s%s r%u%s, {0x%X}",
-                instruction_stems[mnemonic],
-                conditions_extensions[inst.Cond],
-                inst.ldstM_Rn,
-                (inst.ldstM_W) ? "!" : "",
-                inst.ldstM_register_list
-            );
-            break;
-        }
-        case swp:{
-            sprintf(buffer, "%s%s%s r%u, r%u, [r%u]",
-                instruction_stems[mnemonic],
-                conditions_extensions[inst.Cond],
-                (inst.ldst_B) ? "B" : "",
-                inst.ldst_Rd, 
-                inst.ldst_Rn,
-                inst.ldst_Rm
-            );
-        }
-        case NOOP: {
-            sprintf(buffer, "NOOP"); 
-            break;
+            
+            rf[inst.attributes.mull_RdLo] = (uint32_t)mul_result;
+
+            if(inst.attributes.mull_S){
+                PSR cpsr {rf[CPSR]};
+                cpsr.N = (mul_result & ((uint64_t)0x1 << 63)) ? 1 : 0;
+                cpsr.Z = (mul_result == 0);
+                rf[CPSR] = cpsr.word;
+            }   
+            return;
         }
     }
 }
 
-void Arm::execute(uint32_t instruction, InstructionMnemonic mnemonic){
 
-    //need to look at flags
-    if(!condition_pass((ConditionField)CONDITION(instruction))) return;
-
-    InstructionAttributes inst;
-    inst.word = instruction;
-
-    //Branching and Data Transfers
-    switch(mnemonic){
+void ARMCore::BranchInstruction(Instruction inst){
+    switch(inst.mnemonic){
         case B: {
             //why am I 4 off? I guess, read the thing -> PIPELINE!
             //I already step so I don't need to add another 4
-            if(inst.branch_link) rf[LR] = rf[PC];
-            int32_t offset = inst.branch_offset << 2;
+            if(inst.attributes.branch_link) rf[LR] = rf[PC];
+            int32_t offset = inst.attributes.branch_offset << 2;
             rf[PC] = (uint32_t)(rf[PC] + offset + 4);
-            return;
+            break;
         }
         case BX: {
             //Swap Modes
-            rf[PC] = rf[inst.branch_Rn]; //first register bits[3:0]
-            return;
+            PSR cpsr {rf[CPSR]};
+            cpsr.operating_state = rf[inst.attributes.branch_Rn] & 0x1;
+            rf[CPSR] = cpsr.word;
+            rf[PC] = rf[inst.attributes.branch_Rn]; //first register bits[3:0]
+            break;
         }
-        //Memory Transfers
-        case LDRH: case STRH: case LDRSB: case LDRSH: case LDR: case STR: {
+    }
+}
 
+
+void ARMCore::DataTransferInstruction(Instruction inst){
+  //Memory Transfers
+    switch(inst.mnemonic){
+        case LDRH: case STRH: case LDRSB: case LDRSH: case LDR: case STR: {
             MemOp transfer_instruction;
-            uint32_t addr = get_mem_address(inst, rf[PC] - 0x4);
+            uint32_t addr = GetMemAddress(inst);
             
-            OpType op = (OpType)((inst.ldst_L << 1) | inst.ldst_B);
+            OpType op = (OpType)((inst.attributes.ldst_L << 1) | inst.attributes.ldst_B);
             
-            switch(mnemonic){
+            switch(inst.mnemonic){
                 case LDRH: op = ldh; break; 
                 case STRH: op = strh; break;
                 case LDRSB: op = ldsb; break;
                 case LDRSH: op = ldsh; break;
             }
-            // printf("op: %d\n", op);
 
             transfer_instruction.operation = op;
-            transfer_instruction.data = rf[inst.ldst_Rd]; //for stor operation
+            transfer_instruction.data = rf[inst.attributes.ldst_Rd]; //for stor operation
 
-            if(inst.ldst_W && inst.ldst_P) { //may not be functioning correctly
+            if(inst.attributes.ldst_W && inst.attributes.ldst_P) { //may not be functioning correctly
                 //pre
-                rf[inst.ldst_Rn] = addr;
-                transfer_instruction.addr = rf[inst.ldst_Rn];
+                rf[inst.attributes.ldst_Rn] = addr;
+                transfer_instruction.addr = rf[inst.attributes.ldst_Rn];
             } else {
-                transfer_instruction.addr = rf[inst.ldst_Rn];
+                transfer_instruction.addr = rf[inst.attributes.ldst_Rn];
             }
-            // printf("r1 before: %n", rf[1]);
+
             uint32_t data = MMU(transfer_instruction);
-            // printf("r1 after: %X\n", rf[1]);
-            if(!inst.ldst_P) { //may not be functioning correctly
-                rf[inst.ldst_Rn] = addr;
+
+            if(!inst.attributes.ldst_P) {
+                rf[inst.attributes.ldst_Rn] = addr;
             } 
             
-            if(mnemonic != STR && mnemonic != STRH){
-                rf[inst.ldst_Rd] = data;
+            if(inst.mnemonic != STR && inst.mnemonic != STRH){
+                rf[inst.attributes.ldst_Rd] = data;
             }
-            // printf("r1 changes: %X\n", rf[1]);
             return;
         }
         case LDM: case STM: {
             //what registers
-            uint32_t base = rf[inst.ldstM_Rn];
-            MemOp transfer {base, (inst.ldstM_L) ? ldw : strw, 0};
-            if(inst.ldstM_U){
+            uint32_t base = rf[inst.attributes.ldstM_Rn];
+            MemOp transfer {base, (inst.attributes.ldstM_L) ? ldw : strw, 0};
+            if(inst.attributes.ldstM_U){
                 for(int reg = 0; reg < 16; reg++){
-                    if(TESTBIT(inst.ldstM_register_list, reg)){
-                        //transfer from the where Rn is pointing for this register
+                    if(TESTBIT(inst.attributes.ldstM_register_list, reg)){
+                        //transfer from the where Op1 is pointing for this register
                         transfer.data = rf[reg];
-                        if(inst.ldstM_P){
+                        if(inst.attributes.ldstM_P){
                             transfer.addr += 0x4;
                             uint32_t out = MMU(transfer);
-                            if(inst.ldstM_L) rf[reg] = out;
+                            if(inst.attributes.ldstM_L) rf[reg] = out;
                         } else {
                             uint32_t out = MMU(transfer);
-                            if(inst.ldstM_L) rf[reg] = out;
+                            if(inst.attributes.ldstM_L) rf[reg] = out;
                             transfer.addr += 0x4;
                         }
                     }
                 }
-                if(inst.ldstM_W) rf[inst.ldstM_Rn] = transfer.addr;
+                if(inst.attributes.ldstM_W) rf[inst.attributes.ldstM_Rn] = transfer.addr;
             } else {
                 for(int reg = 15; reg >= 0; reg--){
-                    if(TESTBIT(inst.ldstM_register_list, reg)){
+                    if(TESTBIT(inst.attributes.ldstM_register_list, reg)){
                         //transfer from the where Rn is pointing for this register
                         transfer.data = rf[reg];
-                        if(inst.ldstM_P){
+                        if(inst.attributes.ldstM_P){
                             transfer.addr -= 0x4;
                             uint32_t out = MMU(transfer);
-                            if(inst.ldstM_L) rf[reg] = out;
+                            if(inst.attributes.ldstM_L) rf[reg] = out;
                         } else {
                             uint32_t out = MMU(transfer);
-                            if(inst.ldstM_L) rf[reg] = out;
+                            if(inst.attributes.ldstM_L) rf[reg] = out;
                             transfer.addr -= 0x4;
                         }
                     }
                 }
-                if(inst.ldstM_W) rf[inst.ldstM_Rn] = transfer.addr;
+                if(inst.attributes.ldstM_W) rf[inst.attributes.ldstM_Rn] = transfer.addr;
             }
             return;
         }
         case SWP:{
-            MemOp load {rf[inst.ldst_Rn], (inst.ldst_B) ? ldb : ldw, 0};
-            MemOp store {rf[inst.ldst_Rn], (inst.ldst_B) ? strb : strw, rf[inst.ldst_Rm]};
-            rf[inst.ldst_Rd] = MMU(load);
+            MemOp load {rf[inst.attributes.ldst_Rn], (inst.attributes.ldst_B) ? ldb : ldw, 0};
+            MemOp store {rf[inst.attributes.ldst_Rn], (inst.attributes.ldst_B) ? strb : strw, rf[inst.attributes.ldst_Rm]};
+            rf[inst.attributes.ldst_Rd] = MMU(load);
             MMU(store);
             return;
         }
     }
+}
 
 
-    //(Rd <- int, Carry value) 
-    std::pair<uint32_t, uint8_t> outcome;
-    outcome = get_operand_2(inst);
-    long long result = 0;
-    bool logical = false;
+void ARMCore::DataProcessingInstruction(Instruction inst){
+    
+    uint32_t result;
+    uint32_t Op1, Op2;
+    uint8_t C, Rd;
+  
 
-    // logical: (AND, EOR, TST, TEQ, ORR, MOV, BIC, MVN)
-    bool maintain_register = ((uint16_t)mnemonic >= 8 && (uint16_t)mnemonic <= 11);
-    uint32_t Rn = rf[inst.dp_Rn];
-    int subtraction = 0;
+    if(GetOperatingState()) {
+        //go through a different process of getting Operands
+        switch(inst.format){
+            case 1: {
+                
+                break;
+            }
+        }
+
+    } else {
+        Op1 = rf[inst.attributes.dp_Rn];
+        Rd = inst.attributes.dp_Rd;
+        std::tie(Op2, C) = GetOperand(inst);
+    }
+
+    InstructionMnemonic mnemonic = inst.mnemonic;
+    
+    uint8_t old_carry = C;
+
     //Data Processing
-    //SUB things
     switch(mnemonic){
+        //Subtraction based alteration
         case CMP: case SUB: case SBC:{
-            subtraction = 1;
-            outcome.first = ~outcome.first;
-            outcome.second = (mnemonic == SBC) ? outcome.second : 1;
+            Op2 = ~Op2;
+            C = (mnemonic == SBC) ? C : 1;
             mnemonic = ADC; 
             break;
         }
         case RSB: case RSC:{
-            subtraction = 2;
-            Rn = ~Rn;
-            outcome.second = (mnemonic == RSC) ? outcome.second : 1;
+            Op1 = ~Op1;
+            C = (mnemonic == RSC) ? C : 1;
             mnemonic = ADC; 
             break;
         }
     }
 
+    bool logical = false;
     switch (mnemonic)
-    { 
+    {   
+        case MRS: rf[inst.attributes.dp_Rd] = rf[CPSR]; return;
         case MSR: case MSRf: { //there is a slight differnce in the docs considering bit16!!
-            uint32_t result;
-            if(!inst.dp_I && inst.dp_Shift == 0){
-                result = rf[inst.dp_Rm];
-            } else result = outcome.second;
+            uint32_t new_flag_reg;
+
+            if(!inst.attributes.dp_I && inst.attributes.dp_Shift == 0){
+                new_flag_reg = rf[inst.attributes.dp_Rm];
+            } else {
+                new_flag_reg = C;
+            }
+
             if(mnemonic == MSRf){
                 rf[CPSR] &= ~(0xF0000000);
-                rf[CPSR] |= result & (0xF0000000);
-            } else rf[CPSR] = result;
+                rf[CPSR] |= new_flag_reg & (0xF0000000);
+            } else {
+                rf[CPSR] = new_flag_reg;
+            }
             return;
         }
-        case MRS: rf[inst.dp_Rd] = rf[CPSR]; return;
-        //changes flags
         //Logical
-        case TST: case AND: result = Rn & outcome.first; logical = true; break;
-        case TEQ: case EOR: result = Rn ^ outcome.first; logical = true; break;
-        case MOV: result = outcome.first; logical = true; break;
-        case MVN: result = 0xFFFFFFFF ^ outcome.first; logical = true; break;
-        case BIC: result = Rn & ~outcome.first; logical = true; break;
-        case ORR: result = Rn | outcome.first; logical = true; break;
+        case MOV: result = Op2; logical = true; break;
+        case AND: 
+        case TST: result = Op1 & Op2; logical = true; break;
+        case BIC: result = Op1 & ~Op2; logical = true; break;
+        case EOR: 
+        case TEQ: result = Op1 ^ Op2; logical = true; break;
+        case MVN: result = ~Op2; logical = true; break;
+        case ORR: result = Op1 | Op2; logical = true; break;
         //Arithmetic
-        case CMN: case ADD: result = Rn + outcome.first; break;
+        case ADD:
+        case CMN: result = Op1 + Op2; break;
         case ADC: {
-            result = Rn; 
-            result += outcome.first;
-            result += outcome.second; 
+            result = Op1;
+            result += Op2;
+            result += C; 
             break;
-        }
-        // case CMP: case SUB: result = Rn - outcome.first; break;
-        // case RSB: result = outcome.first - Rn; break;
-        // case SBC: result = Rn - outcome.first + outcome.second; break;
-        // case RSC: result = outcome.first - Rn + outcome.second; break;
-        case UNIMP: {
-            return;
         }
     }
 
-    if(!maintain_register) rf[inst.dp_Rd] = (uint32_t)result;
-    //set status flags
-    // printf("result: %u\n", (result));
-    if(inst.dp_S && inst.dp_Rd != 15) { //check for other things too when apparent
-        PSR cpsr;
-        cpsr.word = rf[CPSR];
-
+    bool no_write = (inst.mnemonic == TST || inst.mnemonic == TEQ || inst.mnemonic == CMP || inst.mnemonic == CMN);
+    
+    if(!no_write) {
+        rf[Rd] = result;
+    }
+    
+    if(inst.attributes.dp_S && inst.attributes.dp_Rd != 15) { //check for THUMB MODE THINGS
+        PSR cpsr {rf[CPSR]};
         if(logical){
-            // printf("in\n");
-            cpsr.C = outcome.second;
-
-            cpsr.Z = ((uint32_t)result == 0) ? 1 : 0;
-            // printf("out.sec: %X\n", outcome.second);
-            cpsr.N = ((uint32_t)result & (0x1 << 31)) ? 1 : 0;
+            cpsr.C = old_carry;
         } else {
-            //I don't know if they are reset after unsuccessful instructions or not 
-
-            // printf("N: %u\n", cpsr.N);
-            // printf("result: %X\n", result);
-            //int32_t bounds
-
-            cpsr.V = ((int32_t)result > 2147483647 || (int32_t)result < -2147483647) ? 1 : 0;
-            // cpsr.V = (Rn & N_FIELD);
-
-            uint32_t a, b, c;
-            a = Rn;
-            b = outcome.first;
-            c = outcome.second;
-            // cpsr.C = (())
-            long long x = 0x1A6143389;
-            // cpsr.C = (result > (long long)0xFFFFFFFF) ? 1 : 0; //bit 31 carry
-            // cpsr.C = (a & (0x1 << 31) && b & (0x1 << 31)) || 
-            switch (subtraction)
+            cpsr.V = (~(Op2 ^ Op1) & (result ^ Op1)) >> 31;
+            switch (inst.mnemonic)
             {
-                case 0:{
-                    cpsr.C = ((0xFFFFFFFF - Rn) < outcome.first);
-                    break;
-                }
-                case 1:{
-                    cpsr.C = (Rn >= ~outcome.first);
-                    // cpsr.N = (!((Rn ^ ~outcome.first) & (1 << 31)) && !((Rn ^ outcome.second) & (1 << 31)));
-                    break;
-                }
-                case 2:{
-                    cpsr.C = (outcome.first >= ~Rn);
-                    break;    
-                }
+                case CMP: case SUB: case SBC: cpsr.C = (Op1 >= ~Op2); break;
+                case RSB: case RSC: cpsr.C = (Op2 >= ~Op1); break;    
+                default: cpsr.C = ((0xFFFFFFFF - Op1) < Op2); break;
             }
-            cpsr.Z = ((uint32_t)result == 0) ? 1 : 0;
-            cpsr.N = ((uint32_t)result & (0x1 << 31)) ? 1 : 0;
-
-            // cpsr.word &= ~(0xF0000000);
-            // cpsr.word |= (a & 0x80000000);
-            // cpsr.word |= (uint32_t)(a == 0) << 30;
-            // cpsr.word |= (uint32_t)((0xFFFFFFFF - a) < b) << 29;
-            // cpsr.word |= (uint32_t)(!((a ^ b) & (1 << 31)) && ((a ^ c) & (1 << 31))) << 28;
-
         }
-        // printf("after calcs: %X\n", cpsr.word);
+        cpsr.Z = (result == 0) ? 1 : 0;
+        cpsr.N = (result & (0x1 << 31)) ? 1 : 0;
         rf[CPSR] = cpsr.word;
     }
 }
 
-// private void setFlagsSub(const u32 a, const u32 b, const u32 c) {
-//     regs.psrs[PSR.cpsr] &= ~(PSRField.n | PSRField.z | PSRField.c | PSRField.v);
 
-// regs.psrs[PSR.cpsr] |= (a & PSRField.n);
-// regs.psrs[PSR.cpsr] |= cast(u32)(a == 0) << 30;
-// regs.psrs[PSR.cpsr] |= cast(u32)(a >= b) << 29;
-// regs.psrs[PSR.cpsr] |= cast(u32)(!((a ^ b) & (1 << 31)) && !((a ^ c) & (1 << 31))) << 28;
-// }
-
-
-void Arm::step(){
-    uint32_t instruction = fetch();
-    InstructionMnemonic instruction_type = decode(instruction);
-    execute(instruction, instruction_type);
-}
-
-void Arm::register_dump (char* buffer) const{
+void ARMCore::RegisterDump (char* buffer) const{
     //make sure to free afterwards!
     char* dump_ptr = buffer;
     for(uint8_t reg = 0; reg < REGSIZE; reg++){
@@ -624,17 +753,18 @@ void Arm::register_dump (char* buffer) const{
     }
 }
 
-void Arm::rom_dump(char* buffer){
+
+void ARMCore::RomDump(char* buffer){
     uint32_t pc = rf[PC];
     for (int word = -15; word < 15; word++){
         if((int32_t)(pc + (word*4)) < 0) continue;
 
         char mnemonic[15] {0};
-        Arm::MemOp fetch_operation = {pc + (word*4), Arm::ldw};
-        uint32_t instruction = MMU(fetch_operation);
+        MemOp load = {pc + (word*4), ldw};
+        uint32_t instruction = MMU(load);
 
         if(!(pc + (word*4) > 0x8000000 && pc + (word*4) < 0x80000C0)) {
-            disassemble(mnemonic, instruction, (pc + (word*4))); 
+            Disassemble(mnemonic, instruction, pc + (word*4)); 
         } else {
             //Cartidge Header        rf[inst.rd] = result;
             *mnemonic = 'd';
@@ -649,175 +779,8 @@ void Arm::rom_dump(char* buffer){
     }
 }
 
-void Arm::set_MMU(void* func_ptr){
-    MMU = (uint32_t(*)(MemOp)) func_ptr;
-}
 
-uint32_t Arm::get_pc() const{
-    return rf[PC];
-}
-
-uint32_t Arm::get_mem_address(InstructionAttributes inst, uint32_t instruction_addr, bool offset_only){
-    uint32_t addr_offset = 0;
-    /*
-        Write-back must not be specified if R15 is specified as the base register (Rn). When
-        using R15 as the base register you must remember it contains an address 8 bytes on
-        from the address of the current instruction.
-        R15 must not be specified as the register offset (Rm).
-        When R15 is the source register (Rd) of a register store (STR) instruction, the stored
-        value will be address of the instruction plus 12.
-    */
-    // assert(!(inst.ldst_W && inst.ldst_Rn == PC));
-    // assert(inst.ldst_Rm != PC);
-
-    if(inst.ldst_I){
-        inst.ldst_I = 0;
-        std::pair<uint32_t, uint8_t> out;
-        out = get_operand_2(inst);
-        addr_offset = out.second;
-        inst.ldst_I = 1;
-    } else {
-        addr_offset = inst.ldst_Imm;
-    }
-
-    switch(decode(inst.word)){
-        case LDRH: case STRH: case LDRSB: case LDRSH: {
-            if(!inst.ldstx_immediate_type && inst.ldstx_offset_2 == 0) {
-                //register offset
-                addr_offset = rf[inst.ldstx_Rm];
-            } else if (inst.ldstx_immediate_type) {
-                //immediate offset
-                addr_offset = (inst.ldstx_offset_2 << 4) | inst.ldstx_offset_1;
-            }
-        }
-    }
-
-    if(offset_only) return addr_offset;
-
-    uint32_t base = (inst.ldst_Rn == PC) ? instruction_addr + 0x8 : rf[inst.ldst_Rn]; //8 for pipeline waiting
-    uint32_t addr = (inst.ldst_U) ? base + addr_offset : base - addr_offset;
-    return addr;
-}
-
-std::pair<uint32_t, uint8_t> Arm::get_operand_2(InstructionAttributes inst){
-
-    PSR cpsr;
-    cpsr.word = rf[CPSR];
-    uint8_t carry_out = cpsr.C;
-
-    uint32_t result = 0;
-
-    //I don't know which instructions are RRX(extended) and RR0
-    if(inst.dp_I){
-        //rotated immediate operand 2 
-        uint32_t imm = inst.dp_Imm;
-        uint8_t rotations = inst.dp_Rotate * 2;
-        for (uint8_t times = 0; times < rotations; times++){
-            carry_out = imm & 0x1;
-            imm >>= 1;
-            imm |= (carry_out << 31);
-        }
-        result = imm;
-
-    } else {
-
-        //shifted/rotated register
-        uint32_t reg_value = rf[inst.dp_Rm];
-        // printf("%X\n", reg_value);
-        uint8_t shifts;
-        if(inst.dp_reg_shift && !inst.dp_reg_padding_bit){
-            //register shift
-
-            shifts = (uint8_t)(rf[inst.dp_Rs] & 0xFF);
-        } else if(!inst.dp_reg_shift){
-            shifts = inst.dp_shift_amount; //bit4 not set
-            // printf("shifts:%d", shifts);
-        } 
-
-        // printf("calculated shifts: %u\n", shifts);
-
-        if(shifts == 0) return std::pair<uint32_t, uint8_t>{reg_value, carry_out};
-
-        switch(inst.dp_shift_type){
-            case 0B00:{ //lsl
-                // printf("here");
-                reg_value <<= shifts - 1;
-                carry_out = (reg_value & 0x80000000) >> 31;
-                result = reg_value << 1;
-                break;
-            }
-            case 0B01:{ //lsr
-                reg_value >>= shifts - 1;
-                carry_out = (reg_value & 0x1);
-                result = reg_value >> 1;
-                break;
-            }
-            case 0B10:{ //asr
-                result = (uint32_t)(((int32_t)reg_value) >> shifts);
-                if (shifts < 32) {
-                    carry_out = (reg_value >> shifts - 1) & 0x1;
-                } else carry_out = reg_value >> 31;
-                break;
-            }
-            case 0B11:{ //rr
-                for (uint8_t times = 0; times < shifts; times++){
-                    carry_out = reg_value & 0x1;
-                    reg_value >>= 1;
-                    reg_value |= (carry_out << 31);
-                }
-                result = reg_value;
-                break;
-            }
-            default:{ //impossible
-                result = 0;
-                break;
-            }
-        }
-    }
-
-    /*
-        The arithmetic operations (SUB, RSB, ADD, ADC, SBC, RSC, CMP, CMN) treat each
-        operand as a 32 bit integer (either unsigned or 2's complement signed, the two are
-        equivalent). If the S bit is set (and Rd is not R15) the V flag in the CPSR will be set if
-        an overflow occurs into bit 31 of the result; this may be ignored if the operands were
-        considered unsigned, but warns of a possible error if the operands were 2's
-        complement signed. The C flag will be set to the carry out of bit 31 of the ALU, the Z
-        flag will be set if and only if the result was zero, and the N flag will be set to the value
-        of bit 31 of the result (indicating a negative result if the operands are considered to be
-        2's complement signed).
-    */
-
-    return std::pair<uint32_t, uint8_t>{result, carry_out};
-
-    if(inst.dp_S && inst.dp_Rd != 15) {
-        //set status flags
-        cpsr.C = carry_out;
-        //V ? 
-        if (result & (0x1 << 31)) cpsr.V = 1;
-        cpsr.Z = (result == 0) ? 1 : 0;
-        cpsr.N = (result & (0x1 << 31)) ? 1 : 0;
-        rf[CPSR] = cpsr.word;
-    }
-    
-}
-
-void Arm::dump_instructions_attributes(InstructionAttributes inst, DisplayTypes type){
-
-    switch(type){
-        case dp_1: case dp_2: case dp_3: {
-            printf("Instruction: %08X\n", inst.word);
-            printf("operand_2: 0x%03X\n", inst.dp_operand_2);
-            printf("Rd: 0x%0X\n", inst.dp_Rd);
-            printf("Rn: 0x%0X\n", inst.dp_Rn);
-            printf("S: %X\n", inst.dp_S);
-            printf("OpCode: 0x%0X\n", inst.dp_OpCode);
-            printf("I: %X\n", inst.dp_I);
-            printf("Cond: 0x%0X\n", inst.Cond);
-        }
-    }
-}
-
-Arm::DisplayTypes Arm::get_display_type(InstructionMnemonic mnemonic){
+ARM::DisplayTypes ARMCore::GetDisplayType(InstructionMnemonic mnemonic) const{
 
     switch(mnemonic){
         case MOV: case MVN: case MRS: case MSR: case MSRf: {
@@ -843,7 +806,245 @@ Arm::DisplayTypes Arm::get_display_type(InstructionMnemonic mnemonic){
         case SWP:{
             return swp;
         }
+        case MUL: case MLA: case MULL: case MLAL: {
+            return mul;
+        }
         default:
             return NOOP;
     }
 }
+
+
+void ARMCore::Info(Instruction inst) const{
+    char Disassembly[20];
+    DisplayTypes type = GetDisplayType(inst.mnemonic);
+    Disassemble(Disassembly, inst.attributes.word, inst.address);
+    printf("instruction: 0x%X %s\n",inst.attributes.word, Disassembly);
+    printf("mnemonic: %d display type: %d\n", inst.mnemonic, type);
+    printf("Imm?: %X type: 0x%X reg?: %u shift_reg:%u shift_amount:0x%X base_reg:%u \n",
+    inst.attributes.dp_I, inst.attributes.dp_shift_type, inst.attributes.dp_reg_shift, inst.attributes.dp_Rs, inst.attributes.dp_shift_amount, inst.attributes.dp_Rm);
+}
+
+
+void ARMCore::Disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr) const{
+    //for translating into readable syntax
+
+    InstructionMnemonic mnem;
+    uint16_t format;
+    std::tie(mnem, format) = (GetOperatingState()) ? Decode_T(instruction) : Decode(instruction);
+    Instruction inst {mnem, instruction, instruction_addr, format};
+    DisplayTypes type = GetDisplayType(inst.mnemonic);
+
+    if(GetOperatingState()) return;
+
+#define HEADERBEGIN 0x08000000
+#define HEADEREND 0x080000C0
+
+    if(inst.address > HEADERBEGIN && inst.address < HEADEREND) {
+        sprintf(buffer, "dd");
+        return;
+    }
+
+#undef HEADERBEGIN 
+#undef HEADEREND 
+
+    const char* instruction_stems[] {
+        "AND","EOR","SUB","RSB","ADD","ADC","SBC","RSC",
+        "TST","TEQ","CMP","CMN","ORR","MOV","BIC","MVN",
+        "B","UNDEF","UNIMP", "MRS", "MSR", "BX", "LDR",
+        "STR", "SWI", "LDRH", "STRH", "LDRSB", "LDRSH", 
+        "LDM", "STM", "MSRf", "SWP", "MUL", "MLA", "MULL", "MLAL"
+    };
+
+    const char* conditions_extensions[] {
+        "EQ", //equal
+        "NE", //not equal
+        "CS", //unsigned higher or same
+        "CC", //unsigned lower
+        "MI", //negative
+        "PL", //positive or zero
+        "VS", //overflow
+        "VC", //no overflow
+        "HI", //unsigned higher
+        "LS", //unsigned lower or same
+        "GE", //greater or equal
+        "LT", //less than
+        "GT", //greater than
+        "LE", //less than or equal
+        "", //always
+        "error_cond"
+    };
+
+    const char* shift_type[]{"lsl", "lsr", "asr", "rr"};
+
+    if(GetOperatingState()){
+        //change fields to display correctly
+    }
+
+    switch(type){
+        case dp_1:{
+            uint16_t Rd = inst.attributes.dp_Rd;
+            uint16_t Rm = inst.attributes.dp_Rm;
+            if(inst.mnemonic == MSR) Rd = CPSR;
+            if(inst.mnemonic == MRS) Rm = CPSR;
+
+            if(!inst.attributes.dp_I){
+                if (inst.attributes.dp_reg_shift){
+
+                    sprintf(buffer, "%s%s%s r%u, r%u, %s r%u",
+                        instruction_stems[inst.mnemonic],
+                        conditions_extensions[inst.attributes.Cond],
+                        (inst.attributes.dp_S) ? "S" : "",
+                        Rd, 
+                        Rm,
+                        shift_type[inst.attributes.dp_shift_type],
+                        inst.attributes.dp_Rs,
+                        GetOperand(inst)
+                        );
+                } else {
+
+                    sprintf(buffer, "%s%s%s r%u, r%u, %s %Xh=%Xh",
+                        instruction_stems[inst.mnemonic],
+                        conditions_extensions[inst.attributes.Cond],
+                        (inst.attributes.dp_S) ? "S" : "",
+                        Rd, 
+                        Rm,
+                        shift_type[inst.attributes.dp_shift_type],
+                        inst.attributes.dp_shift_amount,
+                        GetOperand(inst)
+                        );
+                }
+            } else {
+                sprintf(buffer, "%s%s%s r%u, %Xh",
+                    instruction_stems[inst.mnemonic],
+                    conditions_extensions[inst.attributes.Cond],
+                    (inst.attributes.dp_S) ? "S" : "",
+                    Rd, GetOperand(inst));
+            }
+            break;
+        }
+        case dp_2:{
+            if(!inst.attributes.dp_I && inst.attributes.dp_Shift == 0){
+                sprintf(buffer, "%s%s r%u, r%u",
+                instruction_stems[inst.mnemonic],
+                conditions_extensions[inst.attributes.Cond],
+                inst.attributes.dp_Rn, inst.attributes.dp_Rm);
+            } else {
+                sprintf(buffer, "%s%s r%u, %Xh",
+                instruction_stems[inst.mnemonic],
+                conditions_extensions[inst.attributes.Cond],
+                inst.attributes.dp_Rn, GetOperand(inst));
+            }
+            break;
+        }
+        case dp_3:{
+            if(!inst.attributes.dp_I ){
+                sprintf(buffer, "%s%s%s r%u, r%u, r%u, %s %Xh",
+                instruction_stems[inst.mnemonic],
+                conditions_extensions[inst.attributes.Cond],
+                (inst.attributes.dp_S) ? "S" : "",
+                inst.attributes.dp_Rd, inst.attributes.dp_Rn, inst.attributes.dp_Rm,
+                shift_type[inst.attributes.dp_shift_type],
+                inst.attributes.dp_shift_amount
+                );
+            } else {
+                sprintf(buffer, "%s%s%s r%u, r%u, %Xh",
+                instruction_stems[inst.mnemonic],
+                conditions_extensions[inst.attributes.Cond],
+                (inst.attributes.dp_S) ? "S" : "",
+                inst.attributes.dp_Rd, inst.attributes.dp_Rn, GetOperand(inst));
+            }
+            break;
+        }
+        case b_1: {
+            sprintf(buffer, "B%s%s pc, %0Xh =%0Xh %s", //off by one sometimes, PIPELINE!
+                    (inst.attributes.branch_link) ? "L" : "",
+                    conditions_extensions[inst.attributes.Cond],
+                    inst.attributes.branch_offset,
+                    (uint32_t)(inst.address + (inst.attributes.branch_offset << 2) + 8),
+                    (Condition(inst.attributes.Cond)) ? "true;" : "false;"
+                ); 
+            break;
+        }
+        case b_2:{
+            if(rf[inst.attributes.branch_Rn] & 0x1){
+                sprintf(buffer, "BX%s [r%u] =%Xh THUMB",
+                conditions_extensions[inst.attributes.Cond],
+                 inst.attributes.branch_Rn, rf[inst.attributes.branch_Rn]);
+            } else {
+                sprintf(buffer, "BX%s [r%u] =%Xh ARM",
+                conditions_extensions[inst.attributes.Cond],
+                 inst.attributes.branch_Rn, rf[inst.attributes.branch_Rn]);
+            }
+            break;
+        }
+        case ldst: {
+            buffer += sprintf(buffer, "%s%s%s r%u, [r%u, %s%dh]", 
+                    instruction_stems[inst.mnemonic],
+                    conditions_extensions[inst.attributes.Cond],
+                    (inst.attributes.ldst_B && (inst.mnemonic == STR || inst.mnemonic == LDR)) ? "B" : "",
+                    inst.attributes.ldst_Rd,
+                    inst.attributes.ldst_Rn,
+                    (inst.attributes.ldst_U) ? "" : "-",
+                    GetMemAddress(inst, true)
+                );
+            if(rf[PC] <= inst.address + 2) {
+                sprintf(buffer, "=%08Xh",
+                 (inst.attributes.ldst_P) ? GetMemAddress(inst, true) : rf[inst.attributes.ldst_Rn]);
+            }
+            break;
+        }
+        case ldstM: {
+            sprintf(buffer, "%s%s r%u%s, {0x%X}",
+                instruction_stems[inst.mnemonic],
+                conditions_extensions[inst.attributes.Cond],
+                inst.attributes.ldstM_Rn,
+                (inst.attributes.ldstM_W) ? "!" : "",
+                inst.attributes.ldstM_register_list
+            );
+
+            return;
+        }
+        case swp:{
+            sprintf(buffer, "%s%s%s r%u, r%u, [r%u]",
+                instruction_stems[inst.mnemonic],
+                conditions_extensions[inst.attributes.Cond],
+                (inst.attributes.ldst_B) ? "B" : "",
+                inst.attributes.ldst_Rd, 
+                inst.attributes.ldst_Rn,
+                inst.attributes.ldst_Rm
+            );
+            return;
+        }
+        case mul: {
+            if (inst.mnemonic == MLAL || inst.mnemonic == MULL) {
+                sprintf(buffer, "%s%s%s%s r%u, r%u, r%u, r%u",
+                        (inst.attributes.mull_U) ? "U" : "",
+                        instruction_stems[inst.mnemonic],
+                        conditions_extensions[inst.attributes.Cond],
+                        (inst.attributes.mull_S) ? "S" : "",
+                        inst.attributes.mull_RdLo,
+                        inst.attributes.mull_RdHi,
+                        inst.attributes.mull_Rm,
+                        inst.attributes.mull_Rs
+                    );
+                break;
+            } 
+            buffer += sprintf(buffer, "%s%s%s r%u, r%u, r%u",
+                        instruction_stems[inst.mnemonic],
+                        conditions_extensions[inst.attributes.Cond],
+                        (inst.attributes.mul_S) ? "S" : "",
+                        inst.attributes.mul_Rd,
+                        inst.attributes.mul_Rm,
+                        inst.attributes.mul_Rs);
+            if(inst.mnemonic == MLA) sprintf(buffer, " ,r%u", inst.attributes.mul_Rn);
+            break;
+        }
+        case NOOP: {
+            sprintf(buffer, "NOOP"); 
+            break;
+        }
+    }
+
+}
+
