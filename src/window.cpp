@@ -58,6 +58,8 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         return -1;
     }    
 
+
+
     //imgui setup
 
     IMGUI_CHECKVERSION();
@@ -86,22 +88,24 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
     glfwSetWindowIcon(window, 1, images); 
     stbi_image_free(images[0].pixels);
 
+
     while (!glfwWindowShouldClose(window))
     {
         ImGui_ImplGlfw_NewFrame();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui::NewFrame();
-
+        
         if(settings.running) {
-            for(int inst = 0; inst < 0x1FF; inst++){
+            for(int inst = 0; inst < 0xFFF; inst++){
                 arm_handle->Step();
-                if((data.breakpoints.count(arm_handle->GetReg(PC)) == 1)) {
-                    arm_handle->RegisterDump(data.reg_dump_buffer);
-                    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
-                    settings.running = false;
-                    break;
-                }   
+                // if((data.breakpoints.count(arm_handle->GetReg(PC)) == 1)) {
+                //     arm_handle->RegisterDump(data.reg_dump_buffer);
+                //     gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+                //     settings.running = false;
+                //     break;
+                // }   
             }
+            if(arm_handle->GetReg(12) < 0x33F) settings.running = false;
             gba_handle->draw_bit_map();
         }
 
@@ -163,6 +167,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                 ImGui::Begin("Breakpoints");
                 int new_break_point = (int)NULL;
                 char* ptr = data.breakpoints_buffer;
+                *ptr = 0;
                 for(int breakpoint : data.breakpoints) ptr += sprintf(ptr, "%X\n", breakpoint);
                 ImGui::InputInt("##", &new_break_point, 0, 0, input_text_flags);
                 if(new_break_point) data.breakpoints.insert(new_break_point);
@@ -171,7 +176,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             }
 
         }
-    
+
         glfwPollEvents();
 
         if(settings.enable_debug){

@@ -9,7 +9,8 @@
 #include <cstring>
 
 GBA gba = GBA();
-#define DEFAULT_FILE "roms/5_DP_Thumb.gba"
+#define DEFAULT_FILE  "roms/arm.gba"
+// "gba-tests-master/memory/memory.gba"
 
 uint32_t mmu(ARM::MemOp mem_op){
     return gba.memory_access(mem_op);
@@ -26,19 +27,6 @@ int main() {
     sprintf(gba.filepath, DEFAULT_FILE);
     gba.Reset();
 
-    // uint32_t test_inst = 0xE1B03211;
-
-    // core.set_reg(1, 0xb848bc65);
-    // core.SetReg(2, 0x21);
-    // // core.set_reg(16, 0x8000001F);
-    // core.info(test_inst); 
-    // core.execute(test_inst, core.decode(test_inst));
-
-    // char reg_dump[20*17];
-    // core.register_dump(reg_dump);
-    // printf("%s\n", reg_dump);
-
-    // return 0;
 
     return run_app(&core, &gba);
 }

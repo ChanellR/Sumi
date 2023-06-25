@@ -20,7 +20,7 @@
 #define C_FIELD 0x1 << 29
 #define V_FIELD 0x1 << 28
 
-
+#define CARRY_VALUE (rf[CPSR] & 0x20000000) >> 29
 #define BIT_L 24
 #define BIT_S 20
 #define BIT_loadStore 20
@@ -63,7 +63,7 @@ namespace ARM {
         TST, TEQ, CMP, CMN, ORR, MOV, BIC, MVN,
         B, UNDEF, UNIMP, MRS, MSR, BX, LDR, STR,
         SWI, LDRH, STRH, LDRSB, LDRSH, LDM, STM,
-        MSRf, SWP, MUL, MLA, MULL, MLAL
+        MSRf, SWP, MUL, MLA, MULL, MLAL, NILL
     };
     
     enum ConditionField {
@@ -102,7 +102,7 @@ namespace ARM {
     };
     
     //how they are written in ARM assembly
-    enum DisplayTypes {
+    enum DisplayType {
         dp_1, // ? Rd,<Op2>
         dp_2, // ? Rn,<Op2>
         dp_3, // ? Rd,Rn,<Op2>
@@ -258,7 +258,7 @@ namespace ARM {
         };
 
         struct {
-            unsigned int Offset8 : 8;
+            unsigned int t_Offset8 : 8;
             unsigned int t_f3_Rd : 3;
             unsigned int t_f3_Opcode : 2;
             unsigned int t_f3_indentifier : 3; //format 3 identitifier
@@ -286,7 +286,8 @@ namespace ARM {
         };
 
         struct {
-            unsigned int : 6;
+            unsigned int : 3;
+            unsigned int t_Rb : 3;
             unsigned int t_Ro : 3;
             unsigned int t_f7_identifier1 : 1;
             unsigned int t_f7_B : 1;
@@ -345,7 +346,7 @@ namespace ARM {
         };
 
         struct {
-            unsigned int t_Soffset8 : 8;
+            int t_Soffset8 : 8;
             unsigned int t_Cond : 4;
             unsigned int t_f16_identifier : 4; 
         };
@@ -356,7 +357,7 @@ namespace ARM {
         };
 
         struct {
-            unsigned int t_Offset11 : 11;
+            int t_Offset11 : 11;
             unsigned int t_f18_identifier : 5;
         };
 
@@ -374,6 +375,10 @@ namespace ARM {
         uint32_t address;
         uint16_t format;
     };
+
+    enum ShiftOp {
+        lsl, lsr, asr, rr
+    };
 }
 
 using namespace ARM;
@@ -387,17 +392,25 @@ class ARMCore {
 
     uint32_t rf[REGSIZE];   
 
-    public:
+    //Pipeline
+    struct Pipeline {
+        uint32_t fetch_stage;
+        Instruction decode_stage;
+    }Pipeline;
 
+
+    public:
         uint32_t (*MMU)(MemOp mem_op);
         void SetMMU(void* func_ptr);
         void Reset();
+        void Flush();
 
     uint32_t Fetch(State current_state);
     std::pair<InstructionMnemonic, uint16_t> Decode(uint32_t instruction) const;
     std::pair<InstructionMnemonic, uint16_t> Decode_T(uint16_t instruction) const;
     
     bool Condition(uint8_t condition) const;
+    std::pair<int32_t, uint8_t> ShiftOperation(ShiftOp op, uint32_t value, uint16_t shifts) const;
     std::pair<uint32_t, uint8_t> GetOperand(Instruction inst) const;
     uint32_t GetMemAddress(Instruction inst, bool offset_only=false) const;
 
@@ -416,7 +429,7 @@ class ARMCore {
     void SetReg(uint16_t reg, uint32_t value);
     void RomDump(char* buffer);
 
-    ARM::DisplayTypes GetDisplayType(InstructionMnemonic mnemonic) const;
+    ARM::DisplayType GetDisplayType(InstructionMnemonic mnemonic) const;
     void Disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr) const;
     void Info(Instruction instruction) const;
 

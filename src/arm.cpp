@@ -38,11 +38,15 @@ inline State ARMCore::GetOperatingState() const {
     return State(cpsr.operating_state); //1: Thumb 0: Arm
 }
 
-
 uint32_t ARMCore::Fetch(State current_state){
     MemOp fetch_operation {rf[PC], (current_state) ? ldh : ldw, 0};
     uint32_t instruction = MMU(fetch_operation);
+    // if(instruction == 0) {
+    //     printf("address: %X", rf[PC]);
+    //     exit(0);
+    // }
     rf[PC] += (current_state) ? 2 : 4;
+    // if(current_state) printf("instruction: %X\n", instruction);
     return instruction;
 }
 
@@ -217,8 +221,8 @@ std::pair<InstructionMnemonic, uint16_t> ARMCore::Decode_T(uint16_t instruction)
     if(attributes.t_f910_identifier == 0B011){ //immediate offset
         switch(attributes.t_L << 1 | attributes.t_f910_B){
             case 0B00: return std::make_pair(STR, 9);
-            case 0B01: return std::make_pair(LDR, 9); 
-            case 0B10: return std::make_pair(STR, 9);
+            case 0B10: return std::make_pair(LDR, 9); 
+            case 0B01: return std::make_pair(STR, 9);
             case 0B11: return std::make_pair(LDR, 9); //byte immediate
         } //fine
     }
@@ -236,7 +240,7 @@ std::pair<InstructionMnemonic, uint16_t> ARMCore::Decode_T(uint16_t instruction)
             case 0B01: return std::make_pair(LDR, 11); 
         } //fine
     }
-    
+
     if(attributes.t_f12_identifier == 0B1010){
         return std::make_pair(ADD, 12);
     }
@@ -298,7 +302,7 @@ bool ARMCore::Condition(uint8_t condition) const{
 void ARMCore::Execute(Instruction inst){
 
     //Check Condition
-    if(!Condition(inst.attributes.Cond)) return;
+    if(!Condition(inst.attributes.Cond) && !GetOperatingState()) return;
     
     //Most data processes follow the same flag 
     //setting criteria when activated
@@ -323,6 +327,7 @@ void ARMCore::Execute(Instruction inst){
         case MUL: case MLA: case MULL: case MLAL: {
             return MultiplyInstruction(inst);
         }
+        case SWI:
         case UNDEF: case UNIMP:{
             return;
         }
@@ -332,6 +337,22 @@ void ARMCore::Execute(Instruction inst){
 
 void ARMCore::Step(){
 
+    // State current_state = GetOperatingState();
+
+    // if(Pipeline.decode_stage.mnemonic != NILL){
+    //     Execute(Pipeline.decode_stage);
+    // }
+
+    // if(Pipeline.fetch_stage != 0){
+    //     uint16_t format;
+    //     InstructionMnemonic mnem;
+    //     std::tie(mnem, format) = (current_state) ? Decode_T(Pipeline.fetch_stage) : Decode(Pipeline.fetch_stage);
+    //     Instruction inst {mnem, Pipeline.fetch_stage, rf[PC] - ((current_state) ? 2 : 4), format};
+    //     Pipeline.decode_stage = inst;
+    // } else Pipeline.decode_stage.mnemonic = NILL;
+
+    // Pipeline.fetch_stage = Fetch(current_state);
+
     State current_state = GetOperatingState();
     uint32_t instruction = Fetch(current_state);
 
@@ -339,10 +360,14 @@ void ARMCore::Step(){
     InstructionMnemonic mnem;
     std::tie(mnem, format) = (current_state) ? Decode_T(instruction) : Decode(instruction);
     Instruction inst {mnem, instruction, rf[PC] - ((current_state) ? 2 : 4), format};
-
+    // if (mnem == BX && format != 0) printf("addr: %X\n", rf[PC] - 2);
     Execute(inst);
 }
 
+void ARMCore::Flush(){
+    Pipeline.fetch_stage = 0;
+    Pipeline.decode_stage.mnemonic = NILL;
+}
 
 uint32_t ARMCore::GetMemAddress(Instruction inst, bool offset_only) const{
     uint32_t addr_offset = 0;
@@ -419,53 +444,68 @@ std::pair<uint32_t, uint8_t> ARMCore::GetOperand(Instruction inst) const {
 
         if(shifts == 0) return std::make_pair(reg_value, carry_out);
 
-        switch(inst.attributes.dp_shift_type){
-            case 0B00:{ //lsl
-                if(shifts > 31) {
-                    result = 0;
-                    carry_out = (shifts == 32) ? TESTBIT(reg_value, 0) : 0;
-                    break;
-                }
-                reg_value <<= (shifts - 1);
-                carry_out = (reg_value & 0x80000000) >> 31;
-                result = reg_value << 1;
-                break;
-            }
-            case 0B01:{ //lsr
-                if(shifts > 31) {
-                    result = 0;
-                    carry_out = (shifts == 32) ? TESTBIT(reg_value, 31) : 0;
-                    break;
-                }
-                reg_value >>= shifts - 1;
-                carry_out = (reg_value & 0x1);
-                result = reg_value >> 1;
-                break;
-            }
-            case 0B10:{ //asr
-                if (shifts < 32) {
-                    result = (uint32_t)(((int32_t)reg_value) >> shifts);
-                    carry_out = (reg_value >> shifts - 1) & 0x1;
-                } else {
-                    carry_out = (reg_value & 0x80000000) ? 1 : 0;
-                    result = (reg_value & 0x80000000) ? -1 : 0;
-                }
-                break;
-            }
-            case 0B11:{ //rr
-                for (uint8_t times = 0; times < shifts; times++){
-                    carry_out = reg_value & 0x1;
-                    reg_value >>= 1;
-                    reg_value |= (carry_out << 31);
-                }
-                result = reg_value;
-                break;
-            }
-        }
+        return ShiftOperation(ShiftOp(inst.attributes.dp_shift_type), reg_value, shifts);
+
     }
 
     return std::make_pair(result, carry_out);
     
+}
+
+
+std::pair<int32_t, uint8_t> ARMCore::ShiftOperation(ShiftOp op, uint32_t value, uint16_t shifts) const{
+    
+    // if(GetOperatingState())printf("op: %d, value: %X, shifts: %d\n", op, value, shifts);
+    uint32_t result = 0;
+    uint8_t carry_out = CARRY_VALUE;
+
+    if(shifts == 0) return std::make_pair(value, carry_out);
+
+    switch(op){
+        case 0B00:{ //lsl
+            if(shifts > 31) {
+                result = 0;
+                carry_out = (shifts == 32) ? TESTBIT(value, 0) : 0;
+                break;
+            }
+            value <<= (shifts - 1);
+            carry_out = (value & 0x80000000) >> 31;
+            result = value << 1;
+            break;
+        }
+        case 0B01:{ //lsr
+            if(shifts > 31) {
+                result = 0;
+                carry_out = (shifts == 32) ? TESTBIT(value, 31) : 0;
+                break;
+            }
+            value >>= shifts - 1;
+            carry_out = (value & 0x1);
+            result = value >> 1;
+            break;
+        }
+        case 0B10:{ //asr
+            if (shifts < 32) {
+                result = (uint32_t)(((int32_t)value) >> shifts);
+                carry_out = (value >> shifts - 1) & 0x1;
+            } else {
+                carry_out = (value & 0x80000000) ? 1 : 0;
+                result = (value & 0x80000000) ? -1 : 0;
+            }
+            break;
+        }
+        case 0B11:{ //rr
+            for (uint8_t times = 0; times < shifts; times++){
+                carry_out = value & 0x1;
+                value >>= 1;
+                value |= (carry_out << 31);
+            }
+            result = value;
+            break;
+        }
+    }
+
+    return std::make_pair(result, carry_out);
 }
 
 
@@ -520,17 +560,58 @@ void ARMCore::BranchInstruction(Instruction inst){
         case B: {
             //why am I 4 off? I guess, read the thing -> PIPELINE!
             //I already step so I don't need to add another 4
-            if(inst.attributes.branch_link) rf[LR] = rf[PC];
-            int32_t offset = inst.attributes.branch_offset << 2;
-            rf[PC] = (uint32_t)(rf[PC] + offset + 4);
+            int32_t offset;
+            if(GetOperatingState()){
+                switch (inst.format)
+                {
+                    case 16: {
+                        if(!Condition(inst.attributes.t_Cond)) return;
+                        offset = rf[PC] + inst.attributes.t_Soffset8;
+                        break;
+                    }
+                    case 18: {
+                        offset = rf[PC] + (inst.attributes.t_Offset11 << 1);
+                    }     
+                    case 19: {
+                        if(inst.attributes.t_H) {
+                            uint32_t temp = rf[PC];
+                            rf[PC] = rf[LR] + (inst.attributes.t_Offset << 1);
+                            rf[LR] = temp;
+                        } else {
+                            rf[LR] = rf[PC] + (inst.attributes.t_Offset << 12);
+                            return;
+                        }
+                    }       
+                }
+                offset += 2;
+            } else {
+                if(inst.attributes.branch_link) rf[LR] = rf[PC];
+                offset = (inst.attributes.branch_offset << 2) + 4;
+            }
+
+
+            rf[PC] = (uint32_t)(rf[PC] + offset);
             break;
         }
         case BX: {
             //Swap Modes
             PSR cpsr {rf[CPSR]};
-            cpsr.operating_state = rf[inst.attributes.branch_Rn] & 0x1;
+            if(GetOperatingState()){
+                if(inst.attributes.t_H2){
+                    //high registers
+                    rf[PC] = rf[0x8 | inst.attributes.t_RHs] & ~(0x1); //first register bits[3:0]
+                    cpsr.operating_state = rf[0x8 | inst.attributes.t_RHs] & 0x1;
+                } else {
+                    //low registers
+                    rf[PC] = rf[inst.attributes.t_RHs] & ~(0x1); //first register bits[3:0]
+                    cpsr.operating_state = rf[inst.attributes.t_RHs] & 0x1;
+                }
+            } else {
+                rf[PC] = rf[inst.attributes.branch_Rn] & ~(0x1); //first register bits[3:0]
+                cpsr.operating_state = rf[inst.attributes.branch_Rn] & 0x1;
+            }
+            
             rf[CPSR] = cpsr.word;
-            rf[PC] = rf[inst.attributes.branch_Rn]; //first register bits[3:0]
             break;
         }
     }
@@ -541,23 +622,131 @@ void ARMCore::DataTransferInstruction(Instruction inst){
   //Memory Transfers
     switch(inst.mnemonic){
         case LDRH: case STRH: case LDRSB: case LDRSH: case LDR: case STR: {
+            
             MemOp transfer_instruction;
+
+            if(GetOperatingState()){
+                uint16_t Rd;
+                // printf("format: %d\n", inst.format);
+                switch(inst.format){
+                    case 6: {
+                        transfer_instruction = {rf[PC] + inst.attributes.t_Word8, ldw, 0};
+                        Rd = inst.attributes.t_f6_Rd;
+                        break;
+                    }
+                    case 7: {
+                        transfer_instruction.addr = rf[inst.attributes.t_Ro] + rf[inst.attributes.t_Rb];
+                        switch(inst.attributes.t_L << 1 | inst.attributes.t_f7_B) {
+                            case 0B00: {
+                                transfer_instruction.data = rf[inst.attributes.t_Rd];
+                                transfer_instruction.operation = strw;
+                                break;
+                            }
+                            case 0B01: {
+                                transfer_instruction.data = rf[inst.attributes.t_Rd];
+                                transfer_instruction.operation = strb;
+                                break;
+                            }
+                            case 0B10: {
+                                transfer_instruction.operation = ldw;
+                                break;
+                            }
+                            case 0B11: {
+                                transfer_instruction.operation = ldb;
+                                break;
+                            }
+                            Rd = inst.attributes.t_Rd;
+                            break;
+                        }
+                        break;
+                    }
+                    case 8: {
+                        transfer_instruction.addr = rf[inst.attributes.t_Ro] + rf[inst.attributes.t_Rb];
+                        switch((uint8_t(inst.attributes.t_f8_S) << 1) | inst.attributes.t_H) {
+                            case 0B00: {
+                                transfer_instruction.data = rf[inst.attributes.t_Rd];
+                                transfer_instruction.operation = strh;
+                                break;
+                            }
+                            case 0B01: {
+                                transfer_instruction.operation = ldh;
+                                break;
+                            }
+                            case 0B10: {
+                                transfer_instruction.operation = ldsb;
+                                break;
+                            }
+                            case 0B11: {
+                                transfer_instruction.operation = ldsh;
+                                break;
+                            }
+                        }
+                        Rd = inst.attributes.t_Rd;
+                        // printf("addr: %X op: %i\n", transfer_instruction.addr, transfer_instruction.operation);
+                        break;
+                    }
+                    case 9: {
+                        transfer_instruction.addr = inst.attributes.t_Offset5 + rf[inst.attributes.t_Rb];
+                        switch(inst.attributes.t_f910_B << 1 | inst.attributes.t_L) {
+                            case 0B00: {
+                                transfer_instruction.data = rf[inst.attributes.t_Rd];
+                                transfer_instruction.operation = strw;
+                                break;
+                            }
+                            case 0B01: {
+                                transfer_instruction.operation = ldw;
+                                break;
+                            }
+                            case 0B10: {
+                                transfer_instruction.data = rf[inst.attributes.t_Rd];
+                                transfer_instruction.operation = strb;
+                                break;
+                            }
+                            case 0B11: {
+                                transfer_instruction.operation = ldb;
+                                break;
+                            }
+                        }
+                        Rd = inst.attributes.t_Rd;
+                        break;
+                    }
+                    case 10: {
+                        Rd = inst.attributes.t_Rd;
+                        transfer_instruction.addr = rf[inst.attributes.t_Rb] + inst.attributes.t_Offset5;
+                        transfer_instruction.operation = (inst.attributes.t_L) ? ldh : strh;
+                        transfer_instruction.data = rf[inst.attributes.t_Rd];
+                        // printf("addr: %X, op: %i, data: %X\n", transfer_instruction.addr, transfer_instruction.operation, transfer_instruction.data);
+                        break;
+                    }
+                    case 11: {
+                        Rd = inst.attributes.t_f11_Rd;
+                        transfer_instruction.data = rf[inst.attributes.t_f11_Rd];
+                        transfer_instruction.addr = rf[SP] + inst.attributes.t_Word8;
+                        transfer_instruction.operation = (inst.attributes.t_L) ? ldw : strw;
+                        break;
+                    }
+                }   
+
+                uint32_t data = MMU(transfer_instruction);
+                if(inst.mnemonic != STR && inst.mnemonic != STRH) rf[Rd] = data;
+                return;
+
+            } 
+            
             uint32_t addr = GetMemAddress(inst);
-            
             OpType op = (OpType)((inst.attributes.ldst_L << 1) | inst.attributes.ldst_B);
-            
             switch(inst.mnemonic){
                 case LDRH: op = ldh; break; 
                 case STRH: op = strh; break;
                 case LDRSB: op = ldsb; break;
                 case LDRSH: op = ldsh; break;
             }
-
+        
             transfer_instruction.operation = op;
             transfer_instruction.data = rf[inst.attributes.ldst_Rd]; //for stor operation
 
-            if(inst.attributes.ldst_W && inst.attributes.ldst_P) { //may not be functioning correctly
-                //pre
+
+            if(inst.attributes.ldst_W && inst.attributes.ldst_P) {
                 rf[inst.attributes.ldst_Rn] = addr;
                 transfer_instruction.addr = rf[inst.attributes.ldst_Rn];
             } else {
@@ -577,6 +766,45 @@ void ARMCore::DataTransferInstruction(Instruction inst){
         }
         case LDM: case STM: {
             //what registers
+            if(GetOperatingState()){
+                // printf("format: %d\n", inst.format);
+                switch(inst.format){
+                    case 14: { 
+                        MemOp transfer {rf[SP], (inst.attributes.t_L) ? ldw : strw, 0};
+                        if(!inst.attributes.t_L){ //PUSH
+                            if(inst.attributes.t_f14_R) {
+                                transfer.addr -= 0x4;
+                                transfer.data = rf[LR];
+                                MMU(transfer);
+                            }
+                            for(int reg = 7; reg >= 0 ; reg--){
+                                if(TESTBIT(inst.attributes.t_Rlist, reg)){
+                                    //transfer from the where Op1 is pointing for this register
+                                    transfer.addr -= 0x4;
+                                    transfer.data = rf[reg];
+                                    MMU(transfer);
+                                }
+                            }
+                        } else { //POP
+                            for(int reg = 0; reg < 8 ; reg++){
+                                if(TESTBIT(inst.attributes.t_Rlist, reg)){
+                                    //transfer from the where Op1 is pointing for this register
+                                    rf[reg] = MMU(transfer);
+                                    transfer.addr += 0x4;
+                                }
+                            }
+                            if(inst.attributes.t_f14_R) {
+                                rf[PC] = MMU(transfer);
+                                transfer.addr += 0x4;
+                            }
+                        }
+                        rf[SP] = transfer.addr;
+                        return;
+                    }
+
+                }
+            }
+
             uint32_t base = rf[inst.attributes.ldstM_Rn];
             MemOp transfer {base, (inst.attributes.ldstM_L) ? ldw : strw, 0};
             if(inst.attributes.ldstM_U){
@@ -632,13 +860,90 @@ void ARMCore::DataProcessingInstruction(Instruction inst){
     uint32_t result;
     uint32_t Op1, Op2;
     uint8_t C, Rd;
-  
+    bool force_S = false;
 
+  
     if(GetOperatingState()) {
         //go through a different process of getting Operands
+        // printf("mnem: %d Rd: %X Rs: %X format: %d\n", inst.mnemonic, inst.attributes.t_Rd, inst.attributes.t_Rs, inst.format);
+        C = CARRY_VALUE;
+        force_S = true;
         switch(inst.format){
             case 1: {
-                
+                Op1 = 0;
+                Rd = inst.attributes.t_Rd;
+                std::tie(Op2, C) = ShiftOperation(ShiftOp(inst.attributes.t_f1_Opcode), 
+                                                    rf[inst.attributes.t_Rs], 
+                                                    inst.attributes.t_Offset5);
+                // printf("Op2: %X\n", Op2);
+                break;
+            }
+            case 4: {
+                Rd = inst.attributes.t_Rd;
+                Op1 = rf[inst.attributes.t_Rd];
+                switch(inst.mnemonic){
+                    case MOV: {
+                        ShiftOp op;
+                        switch(inst.attributes.t_f4_Opcode){
+                            case 0B0010: op = lsl; break;
+                            case 0B0011: op = lsr; break;
+                            case 0B0100: op = asr; break;
+                            case 0B0111: op = rr; break;
+                        }
+                        std::tie(Op2, C) = ShiftOperation(op, 
+                                                        rf[inst.attributes.t_Rd], 
+                                                        rf[inst.attributes.t_Rs]);
+                        // printf("Op2: %X\n", Op2);
+                        break;
+                    }
+                    case RSB: {
+                        Op1 = rf[inst.attributes.t_Rs];
+                        Op2 = 0;
+                        break;
+                    }
+                    default: {
+                        Op2 = rf[inst.attributes.t_Rs];
+                        break;
+                    }
+                }
+                break; 
+            }
+            case 2: {
+                Op1 = rf[inst.attributes.t_Rs];
+                Rd = inst.attributes.t_Rd;
+                if(inst.attributes.t_I) {
+                    Op2 = inst.attributes.t_Rn_Offset3;
+                } else {
+                    Op2 = rf[inst.attributes.t_Rn_Offset3];
+                }
+                break;
+            }
+            case 3: {
+                Rd = inst.attributes.t_Rd;
+                Op1 = rf[inst.attributes.t_Rd];
+                Op2 = inst.attributes.t_Offset8;
+                break;
+            }
+            case 5: {
+                Rd = inst.attributes.t_RHd;
+                Rd |= (inst.attributes.t_H1) ? 0x8 : 0;
+                uint16_t Rs = inst.attributes.t_RHs;
+                Rs |= (inst.attributes.t_H2) ? 0x8 : 0;
+                Op1 = rf[Rd];
+                Op2 = rf[Rs];
+                if(inst.attributes.t_f5_Opcode != 1) force_S = false; //only on CMP
+                break;
+            }
+            case 12: {
+                Rd = inst.attributes.t_f12_Rd;
+                Op1 = (inst.attributes.t_SP) ? rf[SP] : rf[PC];
+                Op2 = inst.attributes.t_Word8;
+                break;
+            }
+            case 13: {
+                Rd = SP;
+                Op1 = rf[SP];
+                Op2 = int8_t(inst.attributes.t_f13_S << 7 | inst.attributes.t_SWord7);
                 break;
             }
         }
@@ -717,7 +1022,7 @@ void ARMCore::DataProcessingInstruction(Instruction inst){
         rf[Rd] = result;
     }
     
-    if(inst.attributes.dp_S && inst.attributes.dp_Rd != 15) { //check for THUMB MODE THINGS
+    if(force_S || (inst.attributes.dp_S && inst.attributes.dp_Rd != 15)) { //check for THUMB MODE THINGS
         PSR cpsr {rf[CPSR]};
         if(logical){
             cpsr.C = old_carry;
@@ -780,7 +1085,7 @@ void ARMCore::RomDump(char* buffer){
 }
 
 
-ARM::DisplayTypes ARMCore::GetDisplayType(InstructionMnemonic mnemonic) const{
+ARM::DisplayType ARMCore::GetDisplayType(InstructionMnemonic mnemonic) const{
 
     switch(mnemonic){
         case MOV: case MVN: case MRS: case MSR: case MSRf: {
@@ -817,7 +1122,7 @@ ARM::DisplayTypes ARMCore::GetDisplayType(InstructionMnemonic mnemonic) const{
 
 void ARMCore::Info(Instruction inst) const{
     char Disassembly[20];
-    DisplayTypes type = GetDisplayType(inst.mnemonic);
+    DisplayType type = GetDisplayType(inst.mnemonic);
     Disassemble(Disassembly, inst.attributes.word, inst.address);
     printf("instruction: 0x%X %s\n",inst.attributes.word, Disassembly);
     printf("mnemonic: %d display type: %d\n", inst.mnemonic, type);
@@ -833,9 +1138,9 @@ void ARMCore::Disassemble(char* buffer, uint32_t instruction, uint32_t instructi
     uint16_t format;
     std::tie(mnem, format) = (GetOperatingState()) ? Decode_T(instruction) : Decode(instruction);
     Instruction inst {mnem, instruction, instruction_addr, format};
-    DisplayTypes type = GetDisplayType(inst.mnemonic);
+    DisplayType type = GetDisplayType(inst.mnemonic);
 
-    if(GetOperatingState()) return;
+
 
 #define HEADERBEGIN 0x08000000
 #define HEADEREND 0x080000C0
@@ -878,7 +1183,9 @@ void ARMCore::Disassemble(char* buffer, uint32_t instruction, uint32_t instructi
     const char* shift_type[]{"lsl", "lsr", "asr", "rr"};
 
     if(GetOperatingState()){
-        //change fields to display correctly
+        sprintf(buffer, "%s%s", instruction_stems[inst.mnemonic],
+        (inst.mnemonic != B) ? "S" : "");
+        return;
     }
 
     switch(type){
@@ -979,7 +1286,7 @@ void ARMCore::Disassemble(char* buffer, uint32_t instruction, uint32_t instructi
             break;
         }
         case ldst: {
-            buffer += sprintf(buffer, "%s%s%s r%u, [r%u, %s%dh]", 
+            buffer += sprintf(buffer, "%s%s%s r%u, [r%u, %s%Xh]", 
                     instruction_stems[inst.mnemonic],
                     conditions_extensions[inst.attributes.Cond],
                     (inst.attributes.ldst_B && (inst.mnemonic == STR || inst.mnemonic == LDR)) ? "B" : "",
@@ -990,7 +1297,7 @@ void ARMCore::Disassemble(char* buffer, uint32_t instruction, uint32_t instructi
                 );
             if(rf[PC] <= inst.address + 2) {
                 sprintf(buffer, "=%08Xh",
-                 (inst.attributes.ldst_P) ? GetMemAddress(inst, true) : rf[inst.attributes.ldst_Rn]);
+                 (inst.attributes.ldst_P) ? GetMemAddress(inst) : rf[inst.attributes.ldst_Rn]);
             }
             break;
         }
