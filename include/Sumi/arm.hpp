@@ -33,7 +33,9 @@
 #define TESTBIT(x, bit) (x & (0x1 << bit)) >> bit
 
 #define KEYINPUT 0x4000130
+#define DISPSTAT 0x4000004
 
+#define STEPSPERSEC 0xFFFF
 
 namespace ARM {
     
@@ -393,7 +395,7 @@ class ARMCore {
     uint32_t rf[REGSIZE];   
 
     //Pipeline
-    struct Pipeline {
+    struct PipeLine {
         uint32_t fetch_stage;
         Instruction decode_stage;
     }Pipeline;
@@ -424,6 +426,7 @@ class ARMCore {
         void Step();
         uint32_t GetReg(uint16_t reg) const;
         State GetOperatingState() const;
+        uint32_t GetExecuteStageAddr() const;
 
     void RegisterDump(char* buffer) const;
     void SetReg(uint16_t reg, uint32_t value);

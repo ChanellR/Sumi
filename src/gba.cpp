@@ -8,8 +8,9 @@
 #include <cstdio>
 #include <cstring>
 
+
 GBA gba = GBA();
-#define DEFAULT_FILE  "roms/arm.gba"
+#define DEFAULT_FILE  "roms/1000lsT.gba"
 // "gba-tests-master/memory/memory.gba"
 
 uint32_t mmu(ARM::MemOp mem_op){
@@ -26,8 +27,12 @@ int main() {
 
     sprintf(gba.filepath, DEFAULT_FILE);
     gba.Reset();
+    //080008E4
+    // uint32_t instruction = 0xE59FD0B8;
+    // Instruction inst = {core.Decode(instruction).first, instruction, 0, 0};
+    // core.Info(inst);
 
-
+    
     return run_app(&core, &gba);
 }
 
@@ -109,8 +114,11 @@ uint32_t GBA::memory_access(ARM::MemOp mem_op){
     }
     else if(addr >= 0x04000000 && addr <= 0x040003FE){
         //IO
-        // if(addr == KEYINPUT) return 0x0f;
         location = &MEM.IO[addr-0x04000000];
+        if(addr == DISPSTAT) {
+            *location ^= 0x1;
+            return *location; 
+        }
     }
     else if(addr >= 0x04000400 && addr <= 0x04FFFFFF){
         //NU

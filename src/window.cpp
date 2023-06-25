@@ -95,17 +95,21 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         ImGui_ImplOpenGL3_NewFrame();
         ImGui::NewFrame();
         
-        if(settings.running) {
-            for(int inst = 0; inst < 0xFFF; inst++){
+        if(settings.running && !settings.enable_debug) {
+            for(int inst = 0; inst < STEPSPERSEC; inst++){
                 arm_handle->Step();
-                // if((data.breakpoints.count(arm_handle->GetReg(PC)) == 1)) {
-                //     arm_handle->RegisterDump(data.reg_dump_buffer);
-                //     gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
-                //     settings.running = false;
-                //     break;
-                // }   
             }
-            if(arm_handle->GetReg(12) < 0x33F) settings.running = false;
+            gba_handle->draw_bit_map();
+        } else if(settings.running && settings.enable_debug){
+            for(int inst = 0; inst < STEPSPERSEC; inst++){
+                arm_handle->Step();
+                if(data.breakpoints.count(arm_handle->GetExecuteStageAddr()) == 1) {
+                    arm_handle->RegisterDump(data.reg_dump_buffer);
+                    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+                    settings.running = false;
+                    break;
+                }   
+            }
             gba_handle->draw_bit_map();
         }
 
@@ -135,7 +139,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
 
                         arm_handle->Disassemble(mnemonic, instruction, addr); 
 
-                        if (word == 0) {
+                        if (addr == arm_handle->GetExecuteStageAddr()) {
                             ImGui::TextColored(ImVec4(0,1,0.6,0.9),"0x%08X: 0x%08X  %s", addr, instruction, mnemonic);
                         } else {
                             ImGui::Text("0x%08X: 0x%08X  %s", addr, instruction, mnemonic);
@@ -187,17 +191,6 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                 gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
                 gba_handle->draw_bit_map();
             }
-            if(TestKeyPress(window, GLFW_KEY_F9, data.key_presses)) {
-                settings.running = !settings.running;
-            }
-            if(TestKeyPress(window, GLFW_KEY_F5, data.key_presses)) {
-                //Reset
-                arm_handle->Reset(); 
-                gba_handle->Reset();
-                arm_handle->RegisterDump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
-                gba_handle->draw_bit_map();
-            }
         } 
 
         if (settings.enable_controls) {
@@ -215,7 +208,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             // 9     Button L        (etc.)
             // 10-15 Not used
             int gameboy_buttons[] {GLFW_KEY_K, GLFW_KEY_L, GLFW_KEY_N, GLFW_KEY_M,
-                                    GLFW_KEY_O, GLFW_KEY_I, GLFW_KEY_D, GLFW_KEY_A,
+                                    GLFW_KEY_D, GLFW_KEY_A, GLFW_KEY_W, GLFW_KEY_S,
                                     GLFW_KEY_W, GLFW_KEY_S, GLFW_KEY_P, GLFW_KEY_U};
             uint16_t keys_pressed = 0x1FF;
             for(int button = 0; button < 10; button++){
@@ -228,8 +221,17 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             gba_handle->memory_access(store_keypad);
         }
 
+        if(TestKeyPress(window, GLFW_KEY_F9, data.key_presses))  settings.running = !settings.running;
         if(TestKeyPress(window, GLFW_KEY_ESCAPE, data.key_presses)) glfwSetWindowShouldClose(window, true);
         if(TestKeyPress(window, GLFW_KEY_F4, data.key_presses)) data.breakpoints.clear();
+        if(TestKeyPress(window, GLFW_KEY_F5, data.key_presses)) {
+            //Reset
+            arm_handle->Reset(); 
+            gba_handle->Reset();
+            arm_handle->RegisterDump(data.reg_dump_buffer);
+            gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+            gba_handle->draw_bit_map();
+        }
 
         //load bitmap texture
         glTexImage2D(
@@ -241,7 +243,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
 
         ImGui::Begin("BitMap Render");
         ImGui::Image((void*)(intptr_t)renderedTexture, ImVec2(bitmap_width*2, bitmap_height*2));
-        ImGui::End();
+        ImGui::End();   
         
         glClearColor(0xC4/255.0f, 0xAA/255.0f, 0x7D/255.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -252,7 +254,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
-        Sleep((1000/60.0f)); //60 fps cap
+        Sleep((1000/60.0f)); //60 fps cap           
     }
 
     // glfw: terminate, clearing all previously allocated GLFW resources.

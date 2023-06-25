@@ -13,13 +13,14 @@ using namespace ARM;
 void ARMCore::Reset(){
     //sets all registers to 0
     memset(rf, 0, 4*17);
-    //for now
+    Flush();
+
     rf[PC] = 0x08000000; //beginning of ROM
+    // rf[PC] = 0x080002D8; //fixed armwrestler skip crt0
     rf[LR] = 0x08000000; //beginning of ROM
     rf[SP] = 0x03007F00;
     rf[CPSR] = 0x0000001F; //user mode
 }
-
 
 void ARMCore::SetMMU(void* func_ptr){
     MMU = (uint32_t(*)(MemOp)) func_ptr;
@@ -31,6 +32,10 @@ void ARMCore::SetReg(uint16_t reg, uint32_t value){
 
 uint32_t ARMCore::GetReg(uint16_t reg) const{
     return rf[reg];
+}
+
+uint32_t ARMCore::GetExecuteStageAddr() const {
+    return Pipeline.decode_stage.address;
 }
 
 inline State ARMCore::GetOperatingState() const {
@@ -337,31 +342,22 @@ void ARMCore::Execute(Instruction inst){
 
 void ARMCore::Step(){
 
-    // State current_state = GetOperatingState();
-
-    // if(Pipeline.decode_stage.mnemonic != NILL){
-    //     Execute(Pipeline.decode_stage);
-    // }
-
-    // if(Pipeline.fetch_stage != 0){
-    //     uint16_t format;
-    //     InstructionMnemonic mnem;
-    //     std::tie(mnem, format) = (current_state) ? Decode_T(Pipeline.fetch_stage) : Decode(Pipeline.fetch_stage);
-    //     Instruction inst {mnem, Pipeline.fetch_stage, rf[PC] - ((current_state) ? 2 : 4), format};
-    //     Pipeline.decode_stage = inst;
-    // } else Pipeline.decode_stage.mnemonic = NILL;
-
-    // Pipeline.fetch_stage = Fetch(current_state);
+    if(Pipeline.decode_stage.mnemonic != NILL){
+        Execute(Pipeline.decode_stage);
+    } 
 
     State current_state = GetOperatingState();
-    uint32_t instruction = Fetch(current_state);
+    
+    if(Pipeline.fetch_stage != 0){
+        uint16_t format;
+        InstructionMnemonic mnem;
+        std::tie(mnem, format) = (current_state) ? Decode_T(Pipeline.fetch_stage) : Decode(Pipeline.fetch_stage);
+        Instruction inst {mnem, Pipeline.fetch_stage, rf[PC] - ((current_state) ? 2 : 4), format};
+        Pipeline.decode_stage = inst;
+    } else Pipeline.decode_stage.mnemonic = NILL;
 
-    uint16_t format;
-    InstructionMnemonic mnem;
-    std::tie(mnem, format) = (current_state) ? Decode_T(instruction) : Decode(instruction);
-    Instruction inst {mnem, instruction, rf[PC] - ((current_state) ? 2 : 4), format};
-    // if (mnem == BX && format != 0) printf("addr: %X\n", rf[PC] - 2);
-    Execute(inst);
+    Pipeline.fetch_stage = Fetch(current_state);
+
 }
 
 void ARMCore::Flush(){
@@ -406,8 +402,9 @@ uint32_t ARMCore::GetMemAddress(Instruction inst, bool offset_only) const{
 
     if(offset_only) return addr_offset;
 
-    uint32_t base = (inst.attributes.ldst_Rn == PC) ? inst.address + 0x8 : rf[inst.attributes.ldst_Rn]; //8 for pipeline waiting
+    uint32_t base = rf[inst.attributes.ldst_Rn];
     uint32_t addr = (inst.attributes.ldst_U) ? base + addr_offset : base - addr_offset;
+
     return addr;
 }
 
@@ -562,6 +559,7 @@ void ARMCore::BranchInstruction(Instruction inst){
             //I already step so I don't need to add another 4
             int32_t offset;
             if(GetOperatingState()){
+
                 switch (inst.format)
                 {
                     case 16: {
@@ -571,26 +569,30 @@ void ARMCore::BranchInstruction(Instruction inst){
                     }
                     case 18: {
                         offset = rf[PC] + (inst.attributes.t_Offset11 << 1);
+                        break;
                     }     
                     case 19: {
                         if(inst.attributes.t_H) {
-                            uint32_t temp = rf[PC];
+                            uint32_t temp = rf[PC] - 4;
                             rf[PC] = rf[LR] + (inst.attributes.t_Offset << 1);
                             rf[LR] = temp;
                         } else {
                             rf[LR] = rf[PC] + (inst.attributes.t_Offset << 12);
-                            return;
+                            return; //don't flush pipeline
                         }
+                        break;
                     }       
                 }
-                offset += 2;
+
+                // offset += 2; //don't need
+
             } else {
-                if(inst.attributes.branch_link) rf[LR] = rf[PC];
-                offset = (inst.attributes.branch_offset << 2) + 4;
+                if(inst.attributes.branch_link) rf[LR] = rf[PC] - 4;
+                offset = (inst.attributes.branch_offset << 2); // + 4;
             }
 
-
             rf[PC] = (uint32_t)(rf[PC] + offset);
+            Flush();
             break;
         }
         case BX: {
@@ -605,12 +607,14 @@ void ARMCore::BranchInstruction(Instruction inst){
                     //low registers
                     rf[PC] = rf[inst.attributes.t_RHs] & ~(0x1); //first register bits[3:0]
                     cpsr.operating_state = rf[inst.attributes.t_RHs] & 0x1;
+                     // don't flush on the first instruction of the THUMB
                 }
             } else {
-                rf[PC] = rf[inst.attributes.branch_Rn] & ~(0x1); //first register bits[3:0]
+                rf[PC] = (rf[inst.attributes.branch_Rn] & ~(0x1)); //first register bits[3:0]
                 cpsr.operating_state = rf[inst.attributes.branch_Rn] & 0x1;
             }
             
+            Flush();
             rf[CPSR] = cpsr.word;
             break;
         }
@@ -734,6 +738,7 @@ void ARMCore::DataTransferInstruction(Instruction inst){
             } 
             
             uint32_t addr = GetMemAddress(inst);
+            // printf("addr: %X\n", addr);
             OpType op = (OpType)((inst.attributes.ldst_L << 1) | inst.attributes.ldst_B);
             switch(inst.mnemonic){
                 case LDRH: op = ldh; break; 
@@ -745,19 +750,31 @@ void ARMCore::DataTransferInstruction(Instruction inst){
             transfer_instruction.operation = op;
             transfer_instruction.data = rf[inst.attributes.ldst_Rd]; //for stor operation
 
+            // if(inst.attributes.ldst_W && inst.attributes.ldst_P) {
+            //     rf[inst.attributes.ldst_Rn] = addr;
+            //     transfer_instruction.addr = rf[inst.attributes.ldst_Rn];
+            // } else {
+            //     transfer_instruction.addr = rf[inst.attributes.ldst_Rn];
+            // }
 
-            if(inst.attributes.ldst_W && inst.attributes.ldst_P) {
-                rf[inst.attributes.ldst_Rn] = addr;
-                transfer_instruction.addr = rf[inst.attributes.ldst_Rn];
+            if(inst.attributes.ldst_P){
+                transfer_instruction.addr = addr;
             } else {
                 transfer_instruction.addr = rf[inst.attributes.ldst_Rn];
+                rf[inst.attributes.ldst_Rn] = addr;
             }
 
             uint32_t data = MMU(transfer_instruction);
+            // printf("data: %X, OP: %i, addr: %X\n", data, transfer_instruction.operation,
+            // transfer_instruction.addr);
 
-            if(!inst.attributes.ldst_P) {
+            // if(!inst.attributes.ldst_P) {
+            //     rf[inst.attributes.ldst_Rn] = addr;
+            // } 
+
+            if(inst.attributes.ldst_W){
                 rf[inst.attributes.ldst_Rn] = addr;
-            } 
+            }
             
             if(inst.mnemonic != STR && inst.mnemonic != STRH){
                 rf[inst.attributes.ldst_Rd] = data;
