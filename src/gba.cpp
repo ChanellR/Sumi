@@ -10,8 +10,8 @@
 
 
 GBA gba = GBA();
-#define DEFAULT_FILE  "roms/1000lsT.gba"
-// "gba-tests-master/memory/memory.gba"
+#define DEFAULT_FILE  "roms/FuzzARM.gba"
+// #define DEFAULT_FILE  "gba-tests-master/arm/arm.gba"
 
 uint32_t mmu(ARM::MemOp mem_op){
     return gba.memory_access(mem_op);
@@ -27,13 +27,11 @@ int main() {
 
     sprintf(gba.filepath, DEFAULT_FILE);
     gba.Reset();
-    //080008E4
-    // uint32_t instruction = 0xE59FD0B8;
-    // Instruction inst = {core.Decode(instruction).first, instruction, 0, 0};
-    // core.Info(inst);
+    // remove("logs/my_arm_log.bin");
 
+    run_app(&core, &gba);
     
-    return run_app(&core, &gba);
+    return 0;
 }
 
 void GBA::load_rom (uint8_t* dest, size_t file_size){
@@ -50,16 +48,6 @@ void GBA::load_rom (uint8_t* dest, size_t file_size){
 }
 
 void GBA::Reset(){
-
-    // memset(MEM.SRAM, 0, SRAMPAKSIZE);
-    // memset(MEM.board_RAM, 0, 256 * 1024);
-    // memset(MEM.chip_RAM, 0, 32 * 1024);
-    // memset(MEM.IO, 0, 0x3FF);
-    // memset(MEM.palette, 0, 1024);
-    // memset(MEM.VRAM, 0, 96 * 1024);
-    // memset(MEM.OAM, 0, 1024);
-    // memset(ROM, 0, ROMPAKSIZE);
-
     memset(&MEM, 0, sizeof(MEM));
     gba.load_rom(gba.MEM.ROM, ROMPAKSIZE);
 }
@@ -170,6 +158,7 @@ uint32_t GBA::memory_access(ARM::MemOp mem_op){
     if (location == nullptr) {
         return 0;
     }
+
     uint32_t load_val;
 
     //Little-endian

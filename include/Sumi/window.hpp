@@ -15,7 +15,8 @@ struct EmulatorSettings {
     bool enable_controls;
     
     bool running;
-    int  search_address;  
+    int  search_address; 
+    bool enable_video; 
 };
 
 struct EmulatorData {

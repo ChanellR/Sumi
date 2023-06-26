@@ -22,7 +22,7 @@ static void ShowMainMenuBar(ARMCore* arm_handle, GBA* gba_handle);
 const unsigned int SCR_WIDTH = 1000;
 const unsigned int SCR_HEIGHT = 800;
 
-EmulatorSettings settings {true, true, false, true, true, true, true, false, 0x05000000};
+EmulatorSettings settings {true, true, false, true, true, false, true, false, 0x05000000, true};
 EmulatorData data {0};
 
 int run_app(ARMCore* arm_handle, GBA* gba_handle)
@@ -95,14 +95,20 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         ImGui_ImplOpenGL3_NewFrame();
         ImGui::NewFrame();
         
+        bool printpipeline = true;
         if(settings.running && !settings.enable_debug) {
             for(int inst = 0; inst < STEPSPERSEC; inst++){
                 arm_handle->Step();
             }
-            gba_handle->draw_bit_map();
+           if(settings.enable_video)  gba_handle->draw_bit_map();
         } else if(settings.running && settings.enable_debug){
+            printpipeline = false;
             for(int inst = 0; inst < STEPSPERSEC; inst++){
                 arm_handle->Step();
+                // if(arm_handle->Pipeline.fetch_stage == 0) {
+                //     settings.running = false;
+                //     break;
+                // }
                 if(data.breakpoints.count(arm_handle->GetExecuteStageAddr()) == 1) {
                     arm_handle->RegisterDump(data.reg_dump_buffer);
                     gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
@@ -110,9 +116,14 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                     break;
                 }   
             }
-            gba_handle->draw_bit_map();
+            if(settings.enable_video) gba_handle->draw_bit_map();
         }
 
+        if(printpipeline){
+            // printf("fetch inst: %X, decode inst: %X, decode addr: %X\n", 
+            // arm_handle->Pipeline.fetch_stage, arm_handle->Pipeline.decode_stage.attributes.word,
+            // arm_handle->Pipeline.decode_stage.address);
+        }
         ShowMainMenuBar(arm_handle, gba_handle);
         
         if(settings.enable_debug){
@@ -189,7 +200,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                 arm_handle->Step();
                 arm_handle->RegisterDump(data.reg_dump_buffer);
                 gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
-                gba_handle->draw_bit_map();
+                if(settings.enable_video) gba_handle->draw_bit_map();
             }
         } 
 
@@ -214,6 +225,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             for(int button = 0; button < 10; button++){
                 if(glfwGetKey(window, gameboy_buttons[button]) == GLFW_PRESS) {
                     keys_pressed &= ~(0x1 << button); 
+                    // if(button == 3) settings.running = false;
                     // printf("key_pressed: %i\n", button);
                 }
             }

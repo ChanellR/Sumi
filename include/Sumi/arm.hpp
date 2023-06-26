@@ -9,6 +9,7 @@
 #define LR 14
 #define PC 15
 #define CPSR 16
+#define SPSR 17
 
 #define BIT_N 31
 #define BIT_Z 30 
@@ -35,7 +36,7 @@
 #define KEYINPUT 0x4000130
 #define DISPSTAT 0x4000004
 
-#define STEPSPERSEC 0xFFFF
+#define STEPSPERSEC 0xFF
 
 namespace ARM {
     
@@ -53,6 +54,10 @@ namespace ARM {
             unsigned int C : 1; //Carry / Borrow / Extend
             unsigned int Z : 1; //Zero
             unsigned int N : 1; //Negative / Less Than
+        };
+        struct {
+            int : 28;
+            unsigned int flags : 4;
         };
     };
 
@@ -150,6 +155,8 @@ namespace ARM {
         struct { //data processing
             unsigned int dp_Rm : 4;
             unsigned int dp_Shift : 4;
+            int : 14;
+            unsigned int msr_P : 1;
         };
 
         struct { //data processing
@@ -398,10 +405,11 @@ class ARMCore {
     struct PipeLine {
         uint32_t fetch_stage;
         Instruction decode_stage;
-    }Pipeline;
+    };
 
 
     public:
+        PipeLine Pipeline;
         uint32_t (*MMU)(MemOp mem_op);
         void SetMMU(void* func_ptr);
         void Reset();
@@ -435,7 +443,7 @@ class ARMCore {
     ARM::DisplayType GetDisplayType(InstructionMnemonic mnemonic) const;
     void Disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr) const;
     void Info(Instruction instruction) const;
-
+    void Log();
 };
     
 
