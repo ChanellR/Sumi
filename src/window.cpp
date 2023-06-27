@@ -109,7 +109,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                 //     settings.running = false;
                 //     break;
                 // }
-                if(data.breakpoints.count(arm_handle->GetExecuteStageAddr()) == 1) {
+                if(data.breakpoints.count(arm_handle->GetReg(PC)) == 1) {
                     arm_handle->RegisterDump(data.reg_dump_buffer);
                     gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
                     settings.running = false;
@@ -118,12 +118,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             }
             if(settings.enable_video) gba_handle->draw_bit_map();
         }
-
-        if(printpipeline){
-            // printf("fetch inst: %X, decode inst: %X, decode addr: %X\n", 
-            // arm_handle->Pipeline.fetch_stage, arm_handle->Pipeline.decode_stage.attributes.word,
-            // arm_handle->Pipeline.decode_stage.address);
-        }
+        
         ShowMainMenuBar(arm_handle, gba_handle);
         
         if(settings.enable_debug){
@@ -151,9 +146,9 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                         arm_handle->Disassemble(mnemonic, instruction, addr); 
 
                         if (addr == arm_handle->GetExecuteStageAddr()) {
-                            ImGui::TextColored(ImVec4(0,1,0.6,0.9),"0x%08X: 0x%08X  %s", addr, instruction, mnemonic);
+                            ImGui::TextColored(ImVec4(0,1,0.6,0.9),"%08X | 0x%08X  %s", addr, instruction, mnemonic);
                         } else {
-                            ImGui::Text("0x%08X: 0x%08X  %s", addr, instruction, mnemonic);
+                            ImGui::Text("%08X | 0x%08X  %s", addr, instruction, mnemonic);
                         }
                     }
                 }
@@ -192,8 +187,9 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
 
         }
 
+        // break
         glfwPollEvents();
-
+        
         if(settings.enable_debug){
             if(TestKeyPress(window, GLFW_KEY_F10, data.key_presses)) {
                 //step debugger
@@ -203,7 +199,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                 if(settings.enable_video) gba_handle->draw_bit_map();
             }
         } 
-
+        
         if (settings.enable_controls) {
             // 4000130h - KEYINPUT - Key Status (R)
             // Bit   Expl.
@@ -233,6 +229,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             gba_handle->memory_access(store_keypad);
         }
 
+
         if(TestKeyPress(window, GLFW_KEY_F9, data.key_presses))  settings.running = !settings.running;
         if(TestKeyPress(window, GLFW_KEY_ESCAPE, data.key_presses)) glfwSetWindowShouldClose(window, true);
         if(TestKeyPress(window, GLFW_KEY_F4, data.key_presses)) data.breakpoints.clear();
@@ -243,6 +240,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             arm_handle->RegisterDump(data.reg_dump_buffer);
             gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
             gba_handle->draw_bit_map();
+            settings.running = false;
         }
 
         //load bitmap texture
@@ -266,7 +264,8 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
-        Sleep((1000/60.0f)); //60 fps cap           
+        Sleep((1000/60.0f)); //60 fps cap   
+        
     }
 
     // glfw: terminate, clearing all previously allocated GLFW resources.

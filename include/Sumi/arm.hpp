@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
 #include <string>
+#include <cstring>
+#include <array>
 
 #define NOP -1
 #define REGSIZE 18
@@ -140,6 +142,17 @@ namespace ARM {
             int branch_offset : 24;
             unsigned int branch_link : 1;
             int : 3;
+        };
+
+        struct {
+            int : 4;
+            unsigned int status_msr_valid : 8;
+            unsigned int status_valid1 : 4;
+            unsigned int status_mask : 4;
+            unsigned int : 1;
+            unsigned int status_toPsr : 1;
+            unsigned int : 1;
+            unsigned int status_valid2 : 2;
         };
 
         struct { //data processing
@@ -388,6 +401,109 @@ namespace ARM {
     enum ShiftOp {
         lsl, lsr, asr, rr
     };
+
+    class RegisterFile {        
+
+        uint32_t system_registers[17];
+        uint32_t fiq_registers[8];
+        uint32_t svc_registers[3];
+        uint32_t abt_registers[3];
+        uint32_t irq_registers[3];
+        uint32_t und_registers[3];
+
+        public: 
+            void Reset(){
+                memset(system_registers, 0, 16 * 4);
+                memset(fiq_registers, 0, 8 * 4);
+                memset(svc_registers, 0, 3 * 4);
+                memset(abt_registers, 0, 3 * 4);
+                memset(irq_registers, 0, 3 * 4);
+                memset(und_registers, 0, 3 * 4);
+                system_registers[CPSR] = 0x000000DF; //ARM, System mode, int enabled
+                system_registers[SP] = 0x03007F00; //Stack starting position
+                system_registers[PC] = 0x80000000; //start at ROM execution
+            }
+
+            uint32_t& operator[](uint16_t reg_idx) {
+                switch(reg_idx){
+                    case PC: return system_registers[PC];
+                    case CPSR: return system_registers[CPSR];
+                }
+                switch(PSR{system_registers[CPSR]}.operating_mode){
+                    case 0B10000: case 0B11111:{ //User & System Mode
+                        if(reg_idx == SPSR) return system_registers[CPSR]; //SPSR and CPSR are same
+                        return system_registers[reg_idx];
+                    }
+                    case 0B10001: { //FIQ Mode
+                        if(reg_idx < 8) return system_registers[reg_idx];
+                        if(reg_idx == SPSR) return fiq_registers[7]; //special banked SPSR 
+                        return fiq_registers[reg_idx - 8];
+                    }
+                    case 0B10010: { //IRQ Mode
+                        if(reg_idx < 13) return system_registers[reg_idx];
+                        if(reg_idx == SPSR) return irq_registers[2]; //special banked SPSR 
+                        return irq_registers[reg_idx - 13];
+                    }
+                    case 0B10011: { //Supervisor Mode
+                        if(reg_idx < 13) return system_registers[reg_idx];
+                        if(reg_idx == SPSR) return svc_registers[2]; //special banked SPSR 
+                        return svc_registers[reg_idx - 13];
+                    }
+                    case 0B10111: { //Abort Mode
+                        if(reg_idx < 13) return system_registers[reg_idx];
+                        if(reg_idx == SPSR) return abt_registers[2]; //special banked SPSR 
+                        return abt_registers[reg_idx - 13];
+                    }
+                    case 0B11011: { //Undefined Mode
+                        if(reg_idx < 13) return system_registers[reg_idx];
+                        if(reg_idx == SPSR) return und_registers[2]; //special banked SPSR 
+                        return und_registers[reg_idx - 13];
+                    }
+                }
+                return system_registers[0]; //shouldn't happen
+            }
+
+            const uint32_t& operator[](uint16_t reg_idx) const {
+            switch(reg_idx){
+                case PC: return system_registers[PC];
+                case CPSR: return system_registers[CPSR];
+            }
+            switch(PSR{system_registers[CPSR]}.operating_mode){
+                case 0B10000: case 0B11111:{ //User & System Mode
+                    if(reg_idx == SPSR) return system_registers[CPSR]; //SPSR and CPSR are same
+                    return system_registers[reg_idx];
+                }
+                case 0B10001: { //FIQ Mode
+                    if(reg_idx < 8) return system_registers[reg_idx];
+                    if(reg_idx == SPSR) return fiq_registers[7]; //special banked SPSR 
+                    return fiq_registers[reg_idx - 8];
+                }
+                case 0B10010: { //IRQ Mode
+                    if(reg_idx < 13) return system_registers[reg_idx];
+                    if(reg_idx == SPSR) return irq_registers[2]; //special banked SPSR 
+                    return irq_registers[reg_idx - 13];
+                }
+                case 0B10011: { //Supervisor Mode
+                    if(reg_idx < 13) return system_registers[reg_idx];
+                    if(reg_idx == SPSR) return svc_registers[2]; //special banked SPSR 
+                    return svc_registers[reg_idx - 13];
+                }
+                case 0B10111: { //Abort Mode
+                    if(reg_idx < 13) return system_registers[reg_idx];
+                    if(reg_idx == SPSR) return abt_registers[2]; //special banked SPSR 
+                    return abt_registers[reg_idx - 13];
+                }
+                case 0B11011: { //Undefined Mode
+                    if(reg_idx < 13) return system_registers[reg_idx];
+                    if(reg_idx == SPSR) return und_registers[2]; //special banked SPSR 
+                    return und_registers[reg_idx - 13];
+                }
+            }
+            return system_registers[0]; //shouldn't happen
+        }
+
+    };
+
 }
 
 using namespace ARM;
@@ -396,10 +512,10 @@ class ARMCore {
 
     //todo:
     //interrupts
+    //bus signals
     //cycle timing
     //coprocessor
-
-    uint32_t rf[REGSIZE];   
+    //timers
 
     //Pipeline
     struct PipeLine {
@@ -407,20 +523,23 @@ class ARMCore {
         Instruction decode_stage;
     };
 
+    RegisterFile& rf;
 
     public:
+        ARMCore(RegisterFile& reg_ref) : rf(reg_ref) {}
         PipeLine Pipeline;
         uint32_t (*MMU)(MemOp mem_op);
         void SetMMU(void* func_ptr);
         void Reset();
-        void Flush();
-
+        
+    
+    void Flush(bool fetch=true);
     uint32_t Fetch(State current_state);
     std::pair<InstructionMnemonic, uint16_t> Decode(uint32_t instruction) const;
     std::pair<InstructionMnemonic, uint16_t> Decode_T(uint16_t instruction) const;
     
     bool Condition(uint8_t condition) const;
-    std::pair<int32_t, uint8_t> ShiftOperation(ShiftOp op, uint32_t value, uint16_t shifts) const;
+    std::pair<int32_t, uint8_t> ShiftOperation(ShiftOp op, uint32_t value, uint16_t shifts, bool reg_shift=false) const;
     std::pair<uint32_t, uint8_t> GetOperand(Instruction inst) const;
     uint32_t GetMemAddress(Instruction inst, bool offset_only=false) const;
 
@@ -443,7 +562,5 @@ class ARMCore {
     ARM::DisplayType GetDisplayType(InstructionMnemonic mnemonic) const;
     void Disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr) const;
     void Info(Instruction instruction) const;
-    void Log();
+    void Log() const;
 };
-    
-

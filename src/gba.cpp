@@ -8,10 +8,10 @@
 #include <cstdio>
 #include <cstring>
 
-
 GBA gba = GBA();
-#define DEFAULT_FILE  "roms/FuzzARM.gba"
-// #define DEFAULT_FILE  "gba-tests-master/arm/arm.gba"
+
+// #define DEFAULT_FILE  "roms/armwrestler.gba"
+#define DEFAULT_FILE  "gba-tests-master/arm/arm.gba"
 
 uint32_t mmu(ARM::MemOp mem_op){
     return gba.memory_access(mem_op);
@@ -20,17 +20,25 @@ uint32_t mmu(ARM::MemOp mem_op){
 int main() {
 
     //probably initialize state before we enter rendering loop. 
-    ARMCore core = ARMCore();
+    
+    RegisterFile rfs = RegisterFile();
+    ARMCore core = ARMCore(rfs);
 
     core.SetMMU((void*)mmu); //try to learn how to do this with lambdas or something
     core.Reset();
 
+
     sprintf(gba.filepath, DEFAULT_FILE);
     gba.Reset();
+
     // remove("logs/my_arm_log.bin");
 
     run_app(&core, &gba);
-    
+
+    // uint32_t instruction = 0xE329F011;
+    // Instruction test{core.Decode(instruction).first, instruction, 0};
+    // core.Info(test);
+
     return 0;
 }
 

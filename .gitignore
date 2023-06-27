@@ -14,7 +14,7 @@
 # Compiled Dynamic libraries
 *.so
 *.dylib
-*.dll
+# *.dll
 
 # Fortran module files
 *.mod
@@ -30,3 +30,8 @@
 *.exe
 *.out
 *.app
+
+# file/test folders
+gba-tests-master
+roms
+logs

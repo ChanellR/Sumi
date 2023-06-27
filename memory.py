@@ -1,6 +1,3 @@
-base = open("logs/my_arm_log.bin", "rb")
-key = open("logs/arm-log.bin", "rb")
-
 
 def Registers (byte_arr: bytes):
     print("r0: " + byte_arr[3:4].hex() + byte_arr[2:3].hex() +"_"+ byte_arr[1:2].hex() + byte_arr[0:1].hex())
@@ -15,14 +12,14 @@ def Compare(base_path, key_path):
     instructions_counted = 0
     while (b := base.read(4 * 18)):
         k = key.read(4 * 18)
-        
         if b != k:
-           print(f"difference at PC: 0x" + b[15*4+3:15*4-1:-1].hex("_", 2))
            print("base: ")
            Registers(b)
            print("key: ")
            Registers(k)
+           print(f"difference after PC: 0x" + b[15*4+3:15*4-1:-1].hex("_", 2))
            print(hex((4 * instructions_counted * 18)) + " bytes in")
+           print(f"{instructions_counted} instructions counted")
            exit(0)
         instructions_counted += 1
            

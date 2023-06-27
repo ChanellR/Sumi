@@ -10,20 +10,19 @@
 
 class GBA {
         
-        struct Memory{
-            uint8_t SRAM[SRAMPAKSIZE];
-            uint8_t ROM[ROMPAKSIZE];
-            //different speeds
-            uint8_t board_RAM[256 * 1024];
-            uint8_t chip_RAM[32 * 1024];
+    struct Memory{
+        uint8_t SRAM[SRAMPAKSIZE];
+        uint8_t ROM[ROMPAKSIZE];
+        //different speeds
+        uint8_t board_RAM[256 * 1024];
+        uint8_t chip_RAM[32 * 1024];
 
-            uint8_t IO[0x3FF];
-            uint8_t palette[1024];
-            uint8_t VRAM[96 * 1024];
-            uint8_t OAM[1024];
-        }MEM;
+        uint8_t IO[0x3FF];
+        uint8_t palette[1024];
+        uint8_t VRAM[96 * 1024];
+        uint8_t OAM[1024];
+    }MEM;
        
-    
     public:
         char filepath[30] {0};
 
