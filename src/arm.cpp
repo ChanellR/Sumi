@@ -11,31 +11,21 @@
 using namespace ARM;
 
 void ARMCore::Log() const{
-    char file_path[] = "logs/my_arm_log.bin";
+    char file_path[] = "logs/my_armwrestler_boot_log.bin";
     FILE* f = std::fopen(file_path, "ab");
     if (!f) {
         std::cout << "file not properly initialized" << std::endl;
         return;
     }
-    // fwrite(rf, sizeof(uint32_t), REGSIZE, f);
     for(int reg = 0; reg < 18; reg++) fwrite(&rf[reg], sizeof(uint32_t), 1, f);
     std::fclose(f);
 }
 
 
 void ARMCore::Reset(){
-    //sets all registers to 0
-    // memset(rf, 0, 4*REGSIZE);
     rf.Reset();
     Flush();
-
-    //PSR
     rf[PC] = 0x08000000; //beginning of ROM
-    // rf[PC] = 0x080002D8; //fixed armwrestler skip crt0
-    // rf[SP] = 0x03007F00;
-    // rf[LR] = 0x00000000; //beginning of ROM
-    // rf[CPSR] = 0x000000DF; //user mode
-    // rf[SPSR] = 0x000000DF; //user mode
 }
 
 
@@ -73,7 +63,7 @@ uint32_t ARMCore::Fetch(State current_state){
 }
 
 
-std::pair<InstructionMnemonic, uint16_t> ARMCore::Decode(uint32_t instruction) const{
+constexpr std::pair<InstructionMnemonic, uint16_t> ARM::Decode(uint32_t instruction) {
 
     const InstructionAttributes attributes {instruction};
 
@@ -361,13 +351,14 @@ void ARMCore::Step(){
         uint16_t format;
         InstructionMnemonic mnem;
         std::tie(mnem, format) = (current_state) ? Decode_T(Pipeline.fetch_stage) : Decode(Pipeline.fetch_stage);
+
         Instruction inst {mnem, Pipeline.fetch_stage, rf[PC] - ((current_state) ? 2 : 4), format};
         Pipeline.decode_stage = inst;
 
-        // if(inst.mnemonic == UNIMP) {
-        //     printf("Invalid Instruction!!!, addr: %X, inst: %X", inst.address, inst.attributes.word);
-        //     // exit(0);
-        // }
+        if(inst.mnemonic == UNIMP) {
+            printf("Invalid Instruction!!!, addr: %X, inst: %X", inst.address, inst.attributes.word);
+            exit(0);
+        }
 
     } else Pipeline.decode_stage.mnemonic = NILL;
 
@@ -829,7 +820,9 @@ void ARMCore::DataTransferInstruction(Instruction inst){
             } 
             
             uint32_t addr = GetMemAddress(inst);
-            // printf("addr: %X\n", addr);
+            if(inst.mnemonic == STR) addr &= ~(0x3);
+            if(inst.mnemonic == STRH) addr &= ~(0x1); 
+
             OpType op = (OpType)((inst.attributes.ldst_L << 1) | inst.attributes.ldst_B);
             switch(inst.mnemonic){
                 case LDRH: op = ldh; break; 
@@ -839,7 +832,8 @@ void ARMCore::DataTransferInstruction(Instruction inst){
             }
         
             transfer_instruction.operation = op;
-            transfer_instruction.data = rf[inst.attributes.ldst_Rd]; //for stor operation
+            transfer_instruction.data = rf[inst.attributes.ldst_Rd]; //for store operation
+            if(inst.attributes.ldst_Rd == PC) transfer_instruction.data += 4;
 
             if(inst.attributes.ldst_P){
                 transfer_instruction.addr = addr;
@@ -848,7 +842,24 @@ void ARMCore::DataTransferInstruction(Instruction inst){
                 rf[inst.attributes.ldst_Rn] = addr;
             }
 
-            uint32_t data = MMU(transfer_instruction);
+            uint32_t data;
+
+
+            if(((addr & 0x3) && inst.mnemonic == LDR) || ((addr & 0x1) &&  (inst.mnemonic == LDRH || inst.mnemonic == LDRSH))){ //misaligned
+                uint16_t shifts = 0;
+                if(inst.mnemonic == LDR) {
+                    shifts = transfer_instruction.addr & 0x3;
+                    transfer_instruction.addr &= ~(0x3);
+                } else if (inst.mnemonic == LDRH) {
+                    shifts = transfer_instruction.addr & 0x1;
+                    transfer_instruction.addr &= ~(0x1);
+                } else {
+                    transfer_instruction.operation = ldsb;
+                }
+                data = ShiftOperation(rr, MMU(transfer_instruction), shifts * 8).first;
+            } else {
+                data = MMU(transfer_instruction);
+            }
 
             if(inst.attributes.ldst_W){
                 rf[inst.attributes.ldst_Rn] = addr;
@@ -856,12 +867,13 @@ void ARMCore::DataTransferInstruction(Instruction inst){
             
             if(inst.mnemonic != STR && inst.mnemonic != STRH){
                 rf[inst.attributes.ldst_Rd] = data;
+                if(inst.attributes.ldst_Rd == PC) Flush();
             }
             return;
         }
         case LDM: case STM: {
-            //what registers
-//             Whenever R15 is stored to memory the stored value is the address of the STM
+            // What registers
+            // Whenever R15 is stored to memory the stored value is the address of the STM
             // instruction plus 12.
             if(GetOperatingState()){
                 // printf("format: %d\n", inst.format);
@@ -928,7 +940,51 @@ void ARMCore::DataTransferInstruction(Instruction inst){
 
             uint32_t base = rf[inst.attributes.ldstM_Rn];
             MemOp transfer {base, (inst.attributes.ldstM_L) ? ldw : strw, 0};
+            if(inst.attributes.ldstM_register_list == 0x0){
+                transfer.data = rf[PC] + 4;
+                if(inst.mnemonic == LDM){
+                    if(inst.attributes.ldstM_P){
+                        rf[inst.attributes.ldstM_Rn] += (inst.attributes.ldstM_U) ? 0x40 : -0x40;
+                        transfer.addr = rf[inst.attributes.ldstM_Rn];
+                        rf[PC] = MMU(transfer);
+                        Flush();
+                    } else {
+                        rf[PC] = MMU(transfer);
+                        rf[inst.attributes.ldstM_Rn] += (inst.attributes.ldstM_U) ? 0x40 : -0x40;
+                        Flush();
+                    }
+                } else {
+                    if(inst.attributes.ldstM_P){ //pre
+                        rf[inst.attributes.ldstM_Rn] += (inst.attributes.ldstM_U) ? 0x40 : -0x40;
+                        transfer.addr += (inst.attributes.ldstM_U) ? 0x4 : -0x40;
+                        MMU(transfer);
+                    } else {
+                        transfer.addr += (inst.attributes.ldstM_U) ? 0x0 : -0x3C;
+                        MMU(transfer);
+                        rf[inst.attributes.ldstM_Rn] += (inst.attributes.ldstM_U) ? 0x40 : -0x40;
+                    }
+                }
+                return;
+            }
+
+            bool copy_context = false;
+            bool ret_context = false;
+            uint32_t current_context = rf[CPSR];
+
+            if((inst.attributes.ldstM_register_list & (0x1 << 15)) && inst.attributes.ldstM_S){ //R15 in transfer list
+                if(inst.mnemonic == LDM){
+                    copy_context = true;
+                } else {
+                    ret_context = true;
+                    rf[CPSR] = (rf[CPSR] & ~(0x1F)) | (0x10); //go user mode;
+                }
+            } else if (!(inst.attributes.ldstM_register_list & (0x1 << 15)) && inst.attributes.ldstM_S) {
+                ret_context = true;
+                rf[CPSR] = (rf[CPSR] & ~(0x1F)) | (0x10); //go user mode;
+            }
+           
             if(inst.attributes.ldstM_U){
+                uint32_t base_addr = 0; //for writeback edgecases
                 for(int reg = 0; reg < 16; reg++){
                     if(TESTBIT(inst.attributes.ldstM_register_list, reg)){
                         //transfer from the where Op1 is pointing for this register
@@ -937,17 +993,45 @@ void ARMCore::DataTransferInstruction(Instruction inst){
                         if(inst.attributes.ldstM_P){
                             transfer.addr += 0x4;
                             uint32_t out = MMU(transfer);
+                            if(reg == inst.attributes.ldstM_Rn) base_addr = transfer.addr;
                             if(inst.attributes.ldstM_L) rf[reg] = out;
                         } else {
                             uint32_t out = MMU(transfer);
+                            if(reg == inst.attributes.ldstM_Rn) base_addr = transfer.addr;
                             if(inst.attributes.ldstM_L) rf[reg] = out;
                             transfer.addr += 0x4;
                         }
                         if(inst.attributes.ldstM_L && reg == 15) Flush(); //flush if changing PC
                     }
                 }
-                if(inst.attributes.ldstM_W) rf[inst.attributes.ldstM_Rn] = transfer.addr;
+
+                /*
+                   Writeback with Rb included in Rlist: Store OLD base if Rb is FIRST entry in Rlist,
+                   otherwise store NEW base (STM/ARMv4), always store OLD base (STM/ARMv5),
+                   no writeback (LDM/ARMv4), writeback if Rb is "the ONLY register,
+                   or NOT the LAST register" in Rlist (LDM/ARMv5).
+                */
+
+                if(inst.attributes.ldstM_W) {
+                    //don't overwrite the load
+                    bool Rb_first_in_list = ((1 << inst.attributes.ldstM_Rn) & inst.attributes.ldstM_register_list)
+                    && !(((1 << inst.attributes.ldstM_Rn) - 1) & inst.attributes.ldstM_register_list);
+
+                    if(!(inst.mnemonic == LDM && ((1 << inst.attributes.ldstM_Rn) & inst.attributes.ldstM_register_list))){
+                        rf[inst.attributes.ldstM_Rn] = transfer.addr;
+                    } 
+                    if (inst.mnemonic == STM) {
+                        // rf[inst.attributes.ldstM_Rn] = transfer.addr;
+                        if(!Rb_first_in_list) {
+                            MemOp storing_new_base {base_addr, strw, rf[inst.attributes.ldst_Rn]};
+                            MMU(storing_new_base);
+                        }
+                    }
+
+                }
+
             } else {
+                uint32_t base_addr = 0; //for writeback edgecases
                 for(int reg = 15; reg >= 0; reg--){
                     if(TESTBIT(inst.attributes.ldstM_register_list, reg)){
                         //transfer from the where Rn is pointing for this register
@@ -956,23 +1040,59 @@ void ARMCore::DataTransferInstruction(Instruction inst){
                         if(inst.attributes.ldstM_P){
                             transfer.addr -= 0x4;
                             uint32_t out = MMU(transfer);
+                            if(reg == inst.attributes.ldstM_Rn) base_addr = transfer.addr;
                             if(inst.attributes.ldstM_L) rf[reg] = out;
                         } else {
                             uint32_t out = MMU(transfer);
+                            if(reg == inst.attributes.ldstM_Rn) base_addr = transfer.addr;
                             if(inst.attributes.ldstM_L) rf[reg] = out;
                             transfer.addr -= 0x4;
                         }
                         if(inst.attributes.ldstM_L && reg == 15) Flush(); //flush if changing PC
                     }
                 }
-                if(inst.attributes.ldstM_W) rf[inst.attributes.ldstM_Rn] = transfer.addr;
+                
+                if(inst.attributes.ldstM_W) {
+                    //don't overwrite the load
+                    bool Rb_first_in_list = ((1 << inst.attributes.ldstM_Rn) & inst.attributes.ldstM_register_list)
+                    && !(((1 << inst.attributes.ldstM_Rn) - 1) & inst.attributes.ldstM_register_list);
+
+                    if(!(inst.mnemonic == LDM && ((1 << inst.attributes.ldstM_Rn) & inst.attributes.ldstM_register_list))){
+                        rf[inst.attributes.ldstM_Rn] = transfer.addr;
+                    } 
+                    if (inst.mnemonic == STM) {
+                        // rf[inst.attributes.ldstM_Rn] = transfer.addr;
+                        if(!Rb_first_in_list) {
+                            MemOp storing_new_base {base_addr, strw, rf[inst.attributes.ldst_Rn]};
+                            MMU(storing_new_base);
+                        }
+                    }
+
+                }
+
             }
+            
+            if(ret_context) rf[CPSR] = current_context;
+            if(copy_context) rf[CPSR] = rf[SPSR];
+
             return;
         }
         case SWP:{
-            MemOp load {rf[inst.attributes.ldst_Rn], (inst.attributes.ldst_B) ? ldb : ldw, 0};
-            MemOp store {rf[inst.attributes.ldst_Rn], (inst.attributes.ldst_B) ? strb : strw, rf[inst.attributes.ldst_Rm]};
-            rf[inst.attributes.ldst_Rd] = MMU(load);
+            uint32_t addr = rf[inst.attributes.ldst_Rn];
+            uint16_t shifts = 0;
+            if(addr & 0x3 && !inst.attributes.ldst_B){
+                shifts = (addr & 0x3) * 8;
+                addr &= ~(0x3);
+            }
+            MemOp load {addr, (inst.attributes.ldst_B) ? ldb : ldw, 0};
+            MemOp store {addr, (inst.attributes.ldst_B) ? strb : strw, rf[inst.attributes.ldst_Rm]};
+            if(!inst.attributes.ldst_B && shifts != 0) {
+                uint32_t data = MMU(load);
+                rf[inst.attributes.ldst_Rd] = ShiftOperation(rr, data, shifts).first;
+                // printf("data: %X reg: %X shifts: %i\n", data, rf[inst.attributes.ldst_Rd], shifts);
+            } else {
+                rf[inst.attributes.ldst_Rd] = MMU(load);
+            }
             MMU(store);
             return;
         }
@@ -1560,8 +1680,8 @@ void ARMCore::Disassemble(char* buffer, uint32_t instruction, uint32_t instructi
                 conditions_extensions[inst.attributes.Cond],
                 (inst.attributes.ldst_B) ? "B" : "",
                 inst.attributes.ldst_Rd, 
-                inst.attributes.ldst_Rn,
-                inst.attributes.ldst_Rm
+                inst.attributes.ldst_Rm,
+                inst.attributes.ldst_Rn
             );
             return;
         }
@@ -1594,6 +1714,5 @@ void ARMCore::Disassemble(char* buffer, uint32_t instruction, uint32_t instructi
             break;
         }
     }
-
 }
 

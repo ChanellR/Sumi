@@ -31,7 +31,7 @@ int main() {
     sprintf(gba.filepath, DEFAULT_FILE);
     gba.Reset();
 
-    // remove("logs/my_arm_log.bin");
+    // remove("logs/my_armwrestler_boot_log.bin");
 
     run_app(&core, &gba);
 

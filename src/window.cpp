@@ -100,15 +100,11 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             for(int inst = 0; inst < STEPSPERSEC; inst++){
                 arm_handle->Step();
             }
-           if(settings.enable_video)  gba_handle->draw_bit_map();
+           gba_handle->draw_bit_map();
         } else if(settings.running && settings.enable_debug){
             printpipeline = false;
             for(int inst = 0; inst < STEPSPERSEC; inst++){
                 arm_handle->Step();
-                // if(arm_handle->Pipeline.fetch_stage == 0) {
-                //     settings.running = false;
-                //     break;
-                // }
                 if(data.breakpoints.count(arm_handle->GetReg(PC)) == 1) {
                     arm_handle->RegisterDump(data.reg_dump_buffer);
                     gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
@@ -116,7 +112,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                     break;
                 }   
             }
-            if(settings.enable_video) gba_handle->draw_bit_map();
+            gba_handle->draw_bit_map();
         }
         
         ShowMainMenuBar(arm_handle, gba_handle);
@@ -156,6 +152,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
                 ImGui::EndChild();
                 ImGui::End();
             }
+            
             if(settings.enable_stack){
                 ImGui::Begin("Stack");
                 ImGui::BeginChild("Scrolling");

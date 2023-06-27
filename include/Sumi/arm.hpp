@@ -38,7 +38,7 @@
 #define KEYINPUT 0x4000130
 #define DISPSTAT 0x4000004
 
-#define STEPSPERSEC 0xFF
+#define STEPSPERSEC 0x1FFFF
 
 namespace ARM {
     
@@ -402,6 +402,8 @@ namespace ARM {
         lsl, lsr, asr, rr
     };
 
+    constexpr std::pair<InstructionMnemonic, uint16_t> Decode(uint32_t instruction);
+
     class RegisterFile {        
 
         uint32_t system_registers[17];
@@ -412,7 +414,7 @@ namespace ARM {
         uint32_t und_registers[3];
 
         public: 
-            void Reset(){
+            void Reset() {
                 memset(system_registers, 0, 16 * 4);
                 memset(fiq_registers, 0, 8 * 4);
                 memset(svc_registers, 0, 3 * 4);
@@ -504,6 +506,14 @@ namespace ARM {
 
     };
 
+    static constexpr std::array<std::pair<InstructionMnemonic, uint16_t>, 4096> GenerateARMLUT() {
+        std::array<std::pair<InstructionMnemonic, uint16_t>, 4096> lut{};
+        for(auto i = 0; i < 4096; i++){
+            int32_t instruction = ((i & 0xFF0) << (20 - 4)) | ((i & 0xF) << 4);
+            lut[i] = ARM::Decode(instruction);
+        }
+        return lut;
+    }
 }
 
 using namespace ARM;
@@ -524,6 +534,7 @@ class ARMCore {
     };
 
     RegisterFile& rf;
+    // std::array<std::pair<InstructionMnemonic, uint16_t>, 4096> lut = GenerateARMLUT();
 
     public:
         ARMCore(RegisterFile& reg_ref) : rf(reg_ref) {}
@@ -535,8 +546,8 @@ class ARMCore {
     
     void Flush(bool fetch=true);
     uint32_t Fetch(State current_state);
-    std::pair<InstructionMnemonic, uint16_t> Decode(uint32_t instruction) const;
-    std::pair<InstructionMnemonic, uint16_t> Decode_T(uint16_t instruction) const;
+    public:
+        std::pair<InstructionMnemonic, uint16_t> Decode_T(uint16_t instruction) const;
     
     bool Condition(uint8_t condition) const;
     std::pair<int32_t, uint8_t> ShiftOperation(ShiftOp op, uint32_t value, uint16_t shifts, bool reg_shift=false) const;
