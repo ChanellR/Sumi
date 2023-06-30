@@ -13,10 +13,11 @@
 #include <windows.h>
 #include "../include/Sumi/window.hpp"
 
+
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height);
-bool TestKeyPress(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses);
-void OpenMemoryTable(GBA* gba_handle, uint32_t base_address);
-static void ShowMainMenuBar(ARMCore* arm_handle, GBA* gba_handle);
+bool TestKeyPress(GLFWwindow *window, u16 key, std::map<u16, u8> &last_presses);
+void OpenMemoryTable(GBA* gba_handle, u32 base_address);
+static void ShowMainMenuBar(ARM::Core& core, GBA* gba_handle);
 
 // settings
 const unsigned int SCR_WIDTH = 1000;
@@ -25,7 +26,7 @@ const unsigned int SCR_HEIGHT = 800;
 EmulatorSettings settings {true, true, false, true, true, false, true, false, 0x05000000, true};
 EmulatorData data {0};
 
-int run_app(ARMCore* arm_handle, GBA* gba_handle)
+int run_app(ARM::Core& core, GBA* gba_handle)
 {
     const char* glsl_version = "#version 130";
 
@@ -69,8 +70,8 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
     
-    arm_handle->RegisterDump(data.reg_dump_buffer);
-    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+    RegisterDump(core, data.reg_dump_buffer);
+    gba_handle->stack_dump(data.stack_dump_buffer, GetReg(core, SP));
 
     float test_image[20*20*4];
 
@@ -98,16 +99,16 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         bool printpipeline = true;
         if(settings.running && !settings.enable_debug) {
             for(int inst = 0; inst < STEPSPERSEC; inst++){
-                arm_handle->Step();
+                Step(core);
             }
            gba_handle->draw_bit_map();
         } else if(settings.running && settings.enable_debug){
             printpipeline = false;
             for(int inst = 0; inst < STEPSPERSEC; inst++){
-                arm_handle->Step();
-                if(data.breakpoints.count(arm_handle->GetReg(PC)) == 1) {
-                    arm_handle->RegisterDump(data.reg_dump_buffer);
-                    gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+                Step(core);
+                if(data.breakpoints.count(GetReg(core, PC)) == 1) {
+                    RegisterDump(core, data.reg_dump_buffer);
+                    gba_handle->stack_dump(data.stack_dump_buffer, GetReg(core, SP));
                     settings.running = false;
                     break;
                 }   
@@ -115,7 +116,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             gba_handle->draw_bit_map();
         }
         
-        ShowMainMenuBar(arm_handle, gba_handle);
+        ShowMainMenuBar(core, gba_handle);
         
         if(settings.enable_debug){
  
@@ -128,20 +129,20 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             if(settings.enable_instructions){
                 ImGui::Begin("Instruction Memory");
                 ImGui::BeginChild("Scrolling");
-                ARM::State current_state = arm_handle->GetOperatingState();
+                ARM::State current_state = GetOperatingState(core);
                 {
-                    uint32_t pc = arm_handle->GetReg(PC);
+                    u32 pc = GetReg(core, PC);
                     for (int word = -10; word < 10; word++){
-                        uint32_t addr = (pc + (word*((current_state) ? 2 : 4)));
+                        u32 addr = (pc + (word*((current_state) ? 2 : 4)));
                         if(addr < 0) continue;
 
                         char mnemonic[70];
                         ARM::MemOp fetch_operation {addr, (current_state) ? ARM::ldh : ARM::ldw};
-                        uint32_t instruction = arm_handle->MMU(fetch_operation);
+                        u32 instruction = core.MMU(fetch_operation);
 
-                        arm_handle->Disassemble(mnemonic, instruction, addr); 
+                        Disassemble(core, mnemonic, instruction, addr, current_state); 
 
-                        if (addr == arm_handle->GetExecuteStageAddr()) {
+                        if (addr == GetExecuteStageAddr(core)) {
                             ImGui::TextColored(ImVec4(0,1,0.6,0.9),"%08X | 0x%08X  %s", addr, instruction, mnemonic);
                         } else {
                             ImGui::Text("%08X | 0x%08X  %s", addr, instruction, mnemonic);
@@ -190,9 +191,9 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         if(settings.enable_debug){
             if(TestKeyPress(window, GLFW_KEY_F10, data.key_presses)) {
                 //step debugger
-                arm_handle->Step();
-                arm_handle->RegisterDump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+                Step(core);
+                RegisterDump(core, data.reg_dump_buffer);
+                gba_handle->stack_dump(data.stack_dump_buffer, GetReg(core, SP));
                 if(settings.enable_video) gba_handle->draw_bit_map();
             }
         } 
@@ -214,7 +215,7 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
             int gameboy_buttons[] {GLFW_KEY_K, GLFW_KEY_L, GLFW_KEY_N, GLFW_KEY_M,
                                     GLFW_KEY_D, GLFW_KEY_A, GLFW_KEY_W, GLFW_KEY_S,
                                     GLFW_KEY_W, GLFW_KEY_S, GLFW_KEY_P, GLFW_KEY_U};
-            uint16_t keys_pressed = 0x1FF;
+            u16 keys_pressed = 0x1FF;
             for(int button = 0; button < 10; button++){
                 if(glfwGetKey(window, gameboy_buttons[button]) == GLFW_PRESS) {
                     keys_pressed &= ~(0x1 << button); 
@@ -232,10 +233,10 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
         if(TestKeyPress(window, GLFW_KEY_F4, data.key_presses)) data.breakpoints.clear();
         if(TestKeyPress(window, GLFW_KEY_F5, data.key_presses)) {
             //Reset
-            arm_handle->Reset(); 
+            Reset(core); 
             gba_handle->Reset();
-            arm_handle->RegisterDump(data.reg_dump_buffer);
-            gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+            RegisterDump(core, data.reg_dump_buffer);
+            gba_handle->stack_dump(data.stack_dump_buffer, GetReg(core, SP));
             gba_handle->draw_bit_map();
             settings.running = false;
         }
@@ -278,8 +279,8 @@ int run_app(ARMCore* arm_handle, GBA* gba_handle)
 }
 
 //single press key stroke testing
-bool TestKeyPress(GLFWwindow *window, uint16_t key, std::map<uint16_t, uint8_t> &last_presses){
-    uint8_t current_state = glfwGetKey(window, key);
+bool TestKeyPress(GLFWwindow *window, u16 key, std::map<u16, u8> &last_presses){
+    u8 current_state = glfwGetKey(window, key);
     if(current_state == GLFW_RELEASE && last_presses[key] == GLFW_PRESS){
         last_presses[key] = current_state;
         return true;
@@ -299,7 +300,7 @@ void FramebufferSizeCallback(GLFWwindow* window, int width, int height)
 
 
 
-void OpenMemoryTable(GBA* gba_handle, uint32_t base_address){
+void OpenMemoryTable(GBA* gba_handle, u32 base_address){
 
     static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
@@ -314,7 +315,7 @@ void OpenMemoryTable(GBA* gba_handle, uint32_t base_address){
         ImGui::TableHeadersRow();
 
         // Demonstrate using clipper for large vertical lists
-        for (uint32_t row = base_address - (20*4); row < base_address + (20*4); row+=4)
+        for (u32 row = base_address - (20*4); row < base_address + (20*4); row+=4)
         {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -333,7 +334,7 @@ void OpenMemoryTable(GBA* gba_handle, uint32_t base_address){
 
 }
 
-static void ShowMainMenuBar(ARMCore* arm_handle, GBA* gba_handle)
+static void ShowMainMenuBar(ARM::Core& core, GBA* gba_handle)
 {
     if (ImGui::BeginMainMenuBar())
     {
@@ -348,10 +349,10 @@ static void ShowMainMenuBar(ARMCore* arm_handle, GBA* gba_handle)
         {
             if (ImGui::MenuItem("Reset", "F5")) {
                 //Reset
-                arm_handle->Reset(); 
+                Reset(core); 
                 gba_handle->Reset();
-                arm_handle->RegisterDump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+                RegisterDump(core, data.reg_dump_buffer);
+                gba_handle->stack_dump(data.stack_dump_buffer, GetReg(core, SP));
                 gba_handle->draw_bit_map();
             }
             if (ImGui::MenuItem("Run", "F9")) {
@@ -359,9 +360,9 @@ static void ShowMainMenuBar(ARMCore* arm_handle, GBA* gba_handle)
             }
             if (ImGui::MenuItem("Step In", "F10")) {
                 //step debugger
-                arm_handle->Step();
-                arm_handle->RegisterDump(data.reg_dump_buffer);
-                gba_handle->stack_dump(data.stack_dump_buffer, arm_handle->GetReg(SP));
+                Step(core);
+                RegisterDump(core, data.reg_dump_buffer);
+                gba_handle->stack_dump(data.stack_dump_buffer, GetReg(core, SP));
                 gba_handle->draw_bit_map();
             }
             ImGui::EndMenu();

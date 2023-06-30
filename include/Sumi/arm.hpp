@@ -23,30 +23,35 @@
 #define C_FIELD 0x1 << 29
 #define V_FIELD 0x1 << 28
 
-#define CARRY_VALUE (rf[CPSR] & 0x20000000) >> 29
+#define CARRY_VALUE (cpu.rf[CPSR] & 0x20000000) >> 29
 #define BIT_L 24
 #define BIT_S 20
 #define BIT_loadStore 20
 
-#define CONDITION( x ) (uint8_t)((x & 0xf0000000) >> 28)
+#define CONDITION( x ) (u8)((x & 0xf0000000) >> 28)
 //match the nibble starting at the bit given
 #define MATCHNIBBLE(x, template, bit) !((x & (0xf << bit)) ^ (template << bit))
 #define MATCH(x, template)  !((x) ^ template)
-#define GETNIBBLE(x, bit) (uint8_t)((x & (0xf << bit)) >> bit)
+#define GETNIBBLE(x, bit) (u8)((x & (0xf << bit)) >> bit)
 #define TESTBIT(x, bit) (x & (0x1 << bit)) >> bit
 
 #define KEYINPUT 0x4000130
 #define DISPSTAT 0x4000004
 
-#define STEPSPERSEC 0x1FFFF
+#define STEPSPERSEC 0x9F
+
+using u32 = uint32_t;
+using u16 = uint16_t;
+using u8 = uint8_t;
+using i32 = int32_t;
 
 namespace ARM {
     
     enum State {ARMMODE, THUMBMODE};
-
+    
     //Program Status Registers
     union PSR  {
-        uint32_t word;
+        u32 word;
         struct {
             unsigned int operating_mode : 5;
             unsigned int operating_state : 1; //Thumb/Arm
@@ -64,7 +69,7 @@ namespace ARM {
     };
 
     struct ControlSignals {
-        uint8_t BIGEND : 1;
+        u8 BIGEND : 1;
     };
 
     enum InstructionMnemonic {
@@ -105,9 +110,9 @@ namespace ARM {
     };
 
     struct MemOp {
-        uint32_t addr;
+        u32 addr;
         OpType operation;
-        uint32_t data; //on store
+        u32 data; //on store
     };
     
     //how they are written in ARM assembly
@@ -127,7 +132,7 @@ namespace ARM {
     union InstructionAttributes { //instruction interface
 
         //could also sort this by tab
-        uint32_t word;
+        u32 word;
 
         struct { //condition
             int : 28;
@@ -394,26 +399,26 @@ namespace ARM {
     struct Instruction {
         InstructionMnemonic mnemonic;
         InstructionAttributes attributes;
-        uint32_t address;
-        uint16_t format;
+        u32 address;
+        u16 format;
     };
 
     enum ShiftOp {
         lsl, lsr, asr, rr
     };
 
-    constexpr std::pair<InstructionMnemonic, uint16_t> Decode(uint32_t instruction);
 
-    class RegisterFile {        
+    struct RegisterFile {        
 
-        uint32_t system_registers[17];
-        uint32_t fiq_registers[8];
-        uint32_t svc_registers[3];
-        uint32_t abt_registers[3];
-        uint32_t irq_registers[3];
-        uint32_t und_registers[3];
+        u32 system_registers[17];
+        u32 fiq_registers[8];
+        u32 svc_registers[3];
+        u32 abt_registers[3];
+        u32 irq_registers[3];
+        u32 und_registers[3];
 
         public: 
+        
             void Reset() {
                 memset(system_registers, 0, 16 * 4);
                 memset(fiq_registers, 0, 8 * 4);
@@ -426,7 +431,7 @@ namespace ARM {
                 system_registers[PC] = 0x80000000; //start at ROM execution
             }
 
-            uint32_t& operator[](uint16_t reg_idx) {
+            u32& operator[](u16 reg_idx) {
                 switch(reg_idx){
                     case PC: return system_registers[PC];
                     case CPSR: return system_registers[CPSR];
@@ -465,7 +470,7 @@ namespace ARM {
                 return system_registers[0]; //shouldn't happen
             }
 
-            const uint32_t& operator[](uint16_t reg_idx) const {
+            const u32& operator[](u16 reg_idx) const {
             switch(reg_idx){
                 case PC: return system_registers[PC];
                 case CPSR: return system_registers[CPSR];
@@ -506,72 +511,55 @@ namespace ARM {
 
     };
 
-    static constexpr std::array<std::pair<InstructionMnemonic, uint16_t>, 4096> GenerateARMLUT() {
-        std::array<std::pair<InstructionMnemonic, uint16_t>, 4096> lut{};
-        for(auto i = 0; i < 4096; i++){
-            int32_t instruction = ((i & 0xFF0) << (20 - 4)) | ((i & 0xF) << 4);
-            lut[i] = ARM::Decode(instruction);
-        }
-        return lut;
-    }
-}
-
-using namespace ARM;
-
-class ARMCore {
-
-    //todo:
-    //interrupts
-    //bus signals
-    //cycle timing
-    //coprocessor
-    //timers
-
-    //Pipeline
-    struct PipeLine {
-        uint32_t fetch_stage;
+        //Pipeline
+    struct CpuPipeline {
+        u32 fetch_stage;
         Instruction decode_stage;
     };
 
-    RegisterFile& rf;
-    // std::array<std::pair<InstructionMnemonic, uint16_t>, 4096> lut = GenerateARMLUT();
+    struct Core {
 
-    public:
-        ARMCore(RegisterFile& reg_ref) : rf(reg_ref) {}
-        PipeLine Pipeline;
-        uint32_t (*MMU)(MemOp mem_op);
-        void SetMMU(void* func_ptr);
-        void Reset();
-        
+        RegisterFile rf;
+        CpuPipeline Pipeline;
+        // u32 pipeline[2];
+        u32 (*MMU)(MemOp mem_op);
+
+    };
+
+    std::pair<InstructionMnemonic, u16> Decode(u32 instruction);
+    constexpr std::pair<InstructionMnemonic, u16> Decode_T(u16 instruction);
+    constexpr InstructionMnemonic CDecode(const u32 instruction);
+
+    bool Condition(Core& cpu, u8 condition);
+    std::pair<i32, u8> ShiftOperation(Core& cpu, ShiftOp op, u32 value, u16 shifts, bool reg_shift=false);
+    std::pair<u32, u8> GetOperand(Core& cpu, Instruction inst);
+    u32 GetMemAddress(Core& cpu, Instruction inst, bool offset_only=false);
+
+    void BranchInstruction(Core& cpu, Instruction inst);
+    void DataProcessingInstruction(Core& cpu, Instruction inst);
+    void DataTransferInstruction(Core& cpu, Instruction inst);
+    void MultiplyInstruction(Core& cpu, Instruction inst);
+
+    void SetMMU(Core& cpu, void* func_ptr);
+    void Reset(Core& cpu);
     
-    void Flush(bool fetch=true);
-    uint32_t Fetch(State current_state);
-    public:
-        std::pair<InstructionMnemonic, uint16_t> Decode_T(uint16_t instruction) const;
-    
-    bool Condition(uint8_t condition) const;
-    std::pair<int32_t, uint8_t> ShiftOperation(ShiftOp op, uint32_t value, uint16_t shifts, bool reg_shift=false) const;
-    std::pair<uint32_t, uint8_t> GetOperand(Instruction inst) const;
-    uint32_t GetMemAddress(Instruction inst, bool offset_only=false) const;
+    void Flush(Core& cpu, bool fetch=true);
+    u32 Fetch(Core& cpu, State current_state);
+    void Execute(Core& cpu, Instruction inst);
 
-    void Execute(Instruction inst);
-    void BranchInstruction(Instruction inst);
-    void DataProcessingInstruction(Instruction inst);
-    void DataTransferInstruction(Instruction inst);
-    void MultiplyInstruction(Instruction inst);
-    
-    public:
-        void Step();
-        uint32_t GetReg(uint16_t reg) const;
-        State GetOperatingState() const;
-        uint32_t GetExecuteStageAddr() const;
+    void Step(Core& cpu);
+    u32 GetReg(Core& cpu, u16 reg);
+    void SetReg(Core& cpu, u16 reg, u32 value);
+    State GetOperatingState(Core& cpu);
+    u32 GetExecuteStageAddr(Core& cpu);
 
-    void RegisterDump(char* buffer) const;
-    void SetReg(uint16_t reg, uint32_t value);
-    void RomDump(char* buffer);
+    void RegisterDump(Core& cpu, char* buffer);
+    void RomDump(Core& cpu, char* buffer);
 
-    ARM::DisplayType GetDisplayType(InstructionMnemonic mnemonic) const;
-    void Disassemble(char* buffer, uint32_t instruction, uint32_t instruction_addr) const;
-    void Info(Instruction instruction) const;
-    void Log() const;
-};
+    void Disassemble(Core& cpu, char* buffer, u32 instruction, u32 instruction_addr, bool Thumb);
+    void Log(Core& cpu);
+
+    ARM::DisplayType GetDisplayType(InstructionMnemonic mnemonic);
+    void Info(Core& cpu, Instruction instruction);
+
+}; //Namespace ARM

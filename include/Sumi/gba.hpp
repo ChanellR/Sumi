@@ -11,16 +11,16 @@
 class GBA {
         
     struct Memory{
-        uint8_t SRAM[SRAMPAKSIZE];
-        uint8_t ROM[ROMPAKSIZE];
+        u8 SRAM[SRAMPAKSIZE];
+        u8 ROM[ROMPAKSIZE];
         //different speeds
-        uint8_t board_RAM[256 * 1024];
-        uint8_t chip_RAM[32 * 1024];
+        u8 board_RAM[256 * 1024];
+        u8 chip_RAM[32 * 1024];
 
-        uint8_t IO[0x3FF];
-        uint8_t palette[1024];
-        uint8_t VRAM[96 * 1024];
-        uint8_t OAM[1024];
+        u8 IO[0x3FF];
+        u8 palette[1024];
+        u8 VRAM[96 * 1024];
+        u8 OAM[1024];
     }MEM;
        
     public:
@@ -30,13 +30,13 @@ class GBA {
         
         void Reset();
         
-        void load_rom (uint8_t* dest, size_t file_size);
+        void load_rom (u8* dest, size_t file_size);
         void draw_bit_map();
     
-        uint32_t memory_access(ARM::MemOp mem_op);
-        void stack_dump(char* buffer, uint32_t stack_pointer);
-        void mem_dump(char* buffer, uint32_t addr);
+        u32 memory_access(ARM::MemOp mem_op);
+        void stack_dump(char* buffer, u32 stack_pointer);
+        void mem_dump(char* buffer, u32 addr);
 
 };
 
-uint32_t mmu(ARM::MemOp mem_op);
+u32 mmu(ARM::MemOp mem_op);

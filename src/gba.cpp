@@ -11,7 +11,7 @@
 GBA gba = GBA();
 
 // #define DEFAULT_FILE  "roms/armwrestler.gba"
-#define DEFAULT_FILE  "gba-tests-master/arm/arm.gba"
+#define DEFAULT_FILE  "gba-tests-master/thumb/thumb.gba"
 
 uint32_t mmu(ARM::MemOp mem_op){
     return gba.memory_access(mem_op);
@@ -21,19 +21,17 @@ int main() {
 
     //probably initialize state before we enter rendering loop. 
     
-    RegisterFile rfs = RegisterFile();
-    ARMCore core = ARMCore(rfs);
-
-    core.SetMMU((void*)mmu); //try to learn how to do this with lambdas or something
-    core.Reset();
+    ARM::Core core;
+    SetMMU(core, (void*)mmu); //try to learn how to do this with lambdas or something
+    Reset(core);
 
 
     sprintf(gba.filepath, DEFAULT_FILE);
     gba.Reset();
 
-    // remove("logs/my_armwrestler_boot_log.bin");
+    // remove("logs/my_thumb_log.bin");
 
-    run_app(&core, &gba);
+    run_app(core, &gba);
 
     // uint32_t instruction = 0xE329F011;
     // Instruction test{core.Decode(instruction).first, instruction, 0};
@@ -161,6 +159,8 @@ uint32_t GBA::memory_access(ARM::MemOp mem_op){
     }
     else if (addr >= 0x10000000 && addr <= (uint32_t)-1){
         //NU
+        // printf("Reached unreachable memory!");  
+        // exit(0);
     }
 
     if (location == nullptr) {

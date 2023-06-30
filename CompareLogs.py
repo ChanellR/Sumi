@@ -12,7 +12,7 @@ def Compare(test_path, key_path):
     instructions_counted = 0
     while (b := base.read(4 * 18)):
         k = key.read(4 * 18)
-        if b != k and instructions_counted > 930:
+        if b != k:
            print("base: ")
            Registers(b)
            print("key: ")
@@ -26,4 +26,4 @@ def Compare(test_path, key_path):
     print("The files are similar")
     
 if __name__ == "__main__":
-    Compare("logs/my_armwrestler_boot_log.bin", "logs/armwrestler-boot-log.bin")
+    Compare("logs/my_thumb_log.bin", "logs/thumb-log.bin")

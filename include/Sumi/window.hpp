@@ -1,6 +1,7 @@
 #pragma once
 #include "arm.hpp"
 #include "gba.hpp"
+
 #include <set>
 #include <map>
 
@@ -23,8 +24,8 @@ struct EmulatorData {
     char reg_dump_buffer[20 * REGSIZE];
     char stack_dump_buffer[24 * 35];
     char breakpoints_buffer[8 * 10]; //8 points
-    std::set<uint32_t> breakpoints;
-    std::map<uint16_t, uint8_t> key_presses;
+    std::set<u32> breakpoints;
+    std::map<u16, uint8_t> key_presses;
 };
 
-int run_app(ARMCore* arm_handle, GBA* gba_handle);
+int run_app(ARM::Core& arm_handle, GBA* gba_handle);
